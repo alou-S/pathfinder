@@ -1,0 +1,6 @@
+// Example configuration file containing server endpoints
+// Rename to config.rs
+
+pub const SERVER_HOSTNAME: &str = "your-server.example.com";
+pub const API_BASE_URL: &str = "https://api.example.com/v1/route";
+pub const PKGREL: &str = "0000\n";

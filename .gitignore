@@ -1,1 +1,5 @@
 /target
+/.vscode
+TODO.md
+/src/config.rs
+Cargo.lock

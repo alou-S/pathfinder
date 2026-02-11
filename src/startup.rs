@@ -10,6 +10,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use std::time::Duration;
+use sha2::{Sha256, Digest};
 use tokio::time::timeout;
 use windows_sys::Win32::System::Console::{
     GetConsoleMode, SetConsoleMode, ENABLE_VIRTUAL_TERMINAL_PROCESSING,
@@ -19,7 +20,7 @@ use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use colored::*;
 use dont_disappear::any_key_to_continue;
 
-use crate::config::{SERVER_HOSTNAME, PKGREL};
+use crate::config::{SERVER_HOSTNAME, PKGREL, BINARY_CHECKSUMS};
 
 async fn download_file(client: &Client, url: &str, path: &str) -> Result<(), String> {
     // Reqwest setup
@@ -76,10 +77,15 @@ pub fn enable_ansi_support() -> io::Result<()> {
     Ok(())
 }
 
-fn md5sum(file_path: &Path, md5sum: &str) -> Result<bool, Box<dyn std::error::Error>> {
+fn sha256sum(file_path: &Path, exec_name: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let data = fs::read(file_path)?;
-    let digest = md5::compute(data);
-    Ok(format!("{:x}", digest) == md5sum)
+    let digest = Sha256::digest(&data);
+    let sha256sum = BINARY_CHECKSUMS.iter()
+        .find(|(name, _)| *name == exec_name)
+        .map(|(_, sum)| *sum)
+        .unwrap();
+
+    Ok(format!("{:x}", digest) == sha256sum)
 }
 
 fn decompress_zstd<P: AsRef<Path>>(input_path: P, output_path: P) -> io::Result<()> {
@@ -104,19 +110,15 @@ pub async fn startup(base_name: &str) {
 
     let udpproxy_path = workingdir.join("udpproxy.exe");
     let udpproxy_zst_path = workingdir.join("udpproxy.exe.zst");
-    let udpproxy_sum = "6c1259864023fdec1950248df96dd76c";
 
     let wstunnel_path = workingdir.join("wstunnel.exe");
     let wstunnel_zst_path = workingdir.join("wstunnel.exe.zst");
-    let wstunnel_sum = "4a4966297934087aa5ee7150b1e041e0";
 
     let quiche_path = workingdir.join("quiche-client.exe");
     let quiche_zst_path = workingdir.join("quiche-client.exe.zst");
-    let quiche_sum = "c7d52747b9524552b3d785d2fda56870";
 
     let librespeed_path = workingdir.join("librespeed-cli.exe");
     let librespeed_zst_path = workingdir.join("librespeed-cli.exe.zst");
-    let librespeed_sum = "c0ab99485e252f2f2d773b0671db9926";
 
     if exec_name.contains(&temp_name) {
         let orig_path_name = exec_name.replace(&temp_name, &orig_name);
@@ -201,7 +203,7 @@ pub async fn startup(base_name: &str) {
     }
 
     // Downloads/Updates udpproxy
-    if !udpproxy_path.exists() || !md5sum(&udpproxy_path, udpproxy_sum).unwrap() {
+    if !udpproxy_path.exists() || !sha256sum(&udpproxy_path, "udpproxy").unwrap() {
         println!("Updating udpproxy executable");
         download_file(
             &Client::new(),
@@ -215,7 +217,7 @@ pub async fn startup(base_name: &str) {
     }   
 
     // Downloads/Updates wstunnel
-    if !wstunnel_path.exists() || !md5sum(&wstunnel_path, wstunnel_sum).unwrap()
+    if !wstunnel_path.exists() || !sha256sum(&wstunnel_path, "wstunnel").unwrap()
     {
         println!("Updating wstunnel executable");
         download_file(
@@ -230,7 +232,7 @@ pub async fn startup(base_name: &str) {
     }
 
     // Downloads/Updates quiche
-    if !quiche_path.exists() || !md5sum(&quiche_path, quiche_sum).unwrap() {
+    if !quiche_path.exists() || !sha256sum(&quiche_path, "quiche").unwrap() {
         println!("Updating quiche client");
         download_file(
             &Client::new(),
@@ -244,11 +246,11 @@ pub async fn startup(base_name: &str) {
     }
 
     // Downloads/Updates librespeed
-    if !librespeed_path.exists() || !md5sum(&librespeed_path, librespeed_sum).unwrap() {
+    if !librespeed_path.exists() || !sha256sum(&librespeed_path, "librespeed").unwrap() {
         println!("Updating librespeed executable");
         download_file(
             &Client::new(),
-            &format!("https://{}:80/bin/librespeed-cli/librespeed-cli-win-amd64.zst", SERVER_HOSTNAME),
+            &format!("https://{}:80/bin/librespeed-cli/librespeed-cli-win-signed-amd64.zst", SERVER_HOSTNAME),
             librespeed_zst_path.to_str().unwrap(),
         )
         .await

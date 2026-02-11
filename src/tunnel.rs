@@ -2,8 +2,8 @@ use colored::*;
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::thread;
-use std::time::Duration;
 use tokio::process::Command;
+use tokio::time::{sleep, Duration};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SHIFT};
 
 use crate::config::SERVER_HOSTNAME;
@@ -25,52 +25,57 @@ fn get_ip4_addr(hostname: &str) -> String {
 }
 
 async fn test_udp(quiche_path: PathBuf) -> bool {
-    let mut tries = 1;
+    let mut handles = vec![];
 
-    loop {
-        println!("Testing if UDP/443 is open (Try {}/3)", tries);
+    println!("Testing if UDP/443 is open...");
+    for i in 1..=3 {
+        let quiche_path_clone = quiche_path.clone();
+        let handle = tokio::spawn(async move {
+            let output = Command::new(&quiche_path_clone)
+                .args(vec![
+                    "--idle-timeout",
+                    "2",
+                    "https://cloudflare.com/cdn-cgi/trace",
+                ])
+                .kill_on_drop(true)
+                .output()
+                .await;
 
-        let output = Command::new(&quiche_path)
-            .args(vec![
-                "--idle-timeout",
-                "2", 
-                "https://cloudflare.com/cdn-cgi/trace",
-            ])
-            .kill_on_drop(true)
-            .output()
-            .await;
-
-        let output = match output {
-            Ok(output) => output,
-            Err(e) => {
-                println!("Failed to execute quiche command: {}", e);
-                if tries == 3 {
+            let output = match output {
+                Ok(output) => output,
+                Err(e) => {
+                    println!("Failed to execute quiche command: {}", e);
                     return false;
                 }
-                tries += 1;
-                continue;
-            }
-        };
+            };
 
-        let output_str = String::from_utf8_lossy(&output.stdout);
+            let output_str = String::from_utf8_lossy(&output.stdout);
+            output_str.contains("http=http/3")
+        });
 
-        if output_str.contains("http=http/3") {
+        handles.push(handle);
+
+        if i < 3 {
+            sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    // Wait for all outputs
+    for handle in handles {
+        if let Ok(true) = handle.await {
             println!(
                 "{} is open. Tunneling Wireguard via UDP.",
                 "UDP/443".bright_blue()
             );
             return true;
-        } else {
-            if tries == 3 {
-                println!(
-                    "{} seems closed. Tunneling Wireguard via TCP using Websocket relay.",
-                    "UDP/443".bright_blue()
-                );
-                return false;
-            }
-            tries += 1;
         }
     }
+
+    println!(
+        "{} seems closed. Tunneling Wireguard via TCP using Websocket relay.",
+        "UDP/443".bright_blue()
+    );
+    false
 }
 
 pub async fn start_tunnel() -> Result<(), Box<dyn std::error::Error>> {

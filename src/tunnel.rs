@@ -73,8 +73,8 @@ async fn test_udp(quiche_path: PathBuf) -> bool {
     }
 }
 
-pub async fn start_tunnel() {
-    let appdata_binding = std::env::var("LOCALAPPDATA").unwrap();
+pub async fn start_tunnel() -> Result<(), Box<dyn std::error::Error>> {
+    let appdata_binding = std::env::var("LOCALAPPDATA")?;
     let workingdir = std::path::Path::new(&appdata_binding).join("mbtunnel");
 
     let udpproxy_path = workingdir.join("udpproxy.exe");
@@ -107,8 +107,7 @@ pub async fn start_tunnel() {
                 "udp://51280:127.0.0.1:51280\\?timeout_sec=0",
             ])
             .status()
-            .await
-            .unwrap();
+            .await?;
     } else {
         println!("{}", "You may now connect to Wireguard\n".bright_green());
         Command::new(udpproxy_path)
@@ -124,7 +123,8 @@ pub async fn start_tunnel() {
                 "-d",
             ])
             .status()
-            .await
-            .unwrap();
+            .await?;
     }
+
+    Ok(())
 }

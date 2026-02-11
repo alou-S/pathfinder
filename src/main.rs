@@ -71,9 +71,15 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
 
 
-    if exec_name.contains("mbtunnel.exe") || (args.len() > 1 && args[1] == "start_tunnel") {
+    if exec_name.contains("mbtunnel.exe") || exec_name.contains("mbtunnel-temp.exe") || (args.len() > 1 && args[1] == "start_tunnel") {
         startup("mbtunnel").await;
-        start_tunnel().await;
+        match start_tunnel().await {
+            Ok(_) => {},
+            Err(e) => {
+                eprintln!("Error starting tunnel: {}", format!("{}", e).bright_red());
+                any_key_to_continue::custom_msg("Press any key to exit...");
+            }
+        }
         return
     } else if exec_name.contains("pathfinder.exe") || exec_name.contains("pathfinder-temp.exe") {
         startup("pathfinder").await;

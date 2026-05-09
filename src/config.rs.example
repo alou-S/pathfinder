@@ -1,0 +1,21 @@
+// Example configuration file containing static variables
+// Rename to config.rs
+
+pub const SERVER_HOSTNAME: &str = "your-server.example.com";
+pub const API_BASE_URL: &str = "https://api.example.com/v1/route";
+pub const PKGREL: &str = "0000\n";
+pub const BINARY_CHECKSUMS: &[(&str, &str)] = &[
+    ("udpproxy", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+    ("wstunnel", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+    ("quiche", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+    ("librespeed", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+];
+
+
+
+
+
+
+
+
+

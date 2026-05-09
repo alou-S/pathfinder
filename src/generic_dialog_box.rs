@@ -1,0 +1,100 @@
+use eframe::egui;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DialogReply {
+    Primary,
+    Secondary,
+    Closed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DialogAction {
+    None,
+    ClearAllKeys,
+    ClearSpecificKey,
+    IgnoreSaveError,
+}
+
+
+pub struct GenericDialogBox {
+    dialog_box_title: String,
+    dialog_box_message: String,
+    primary_button: String,
+    secondary_button: Option<String>,
+    pub action: DialogAction,
+    is_open: bool,
+}
+
+impl GenericDialogBox {
+    pub fn info(title: impl Into<String>, message: impl Into<String>, button: impl Into<String>) -> Self {
+        Self {
+            dialog_box_title: title.into(),
+            dialog_box_message: message.into(),
+            primary_button: button.into(),
+            secondary_button: None,
+            action: DialogAction::None,
+            is_open: true,
+        }
+    }
+
+    pub fn two_buttons(
+        title: impl Into<String>,
+        message: impl Into<String>,
+        primary_button: impl Into<String>,
+        secondary_button: impl Into<String>,
+        action: DialogAction,
+    ) -> Self {
+        Self {
+            dialog_box_title: title.into(),
+            dialog_box_message: message.into(),
+            primary_button: primary_button.into(),
+            secondary_button: Some(secondary_button.into()),
+            action,
+            is_open: true,
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Option<DialogReply> {
+        if !self.is_open {
+            return Some(DialogReply::Closed);
+        }
+
+        let mut open = self.is_open;
+        let mut reply = None;
+
+        egui::Window::new(self.dialog_box_title.as_str())
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(self.dialog_box_message.as_str());
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button(self.primary_button.as_str()).clicked() {
+                        reply = Some(DialogReply::Primary);
+                    }
+
+                    if let Some(secondary) = &self.secondary_button {
+                        if ui.button(secondary.as_str()).clicked() {
+                            reply = Some(DialogReply::Secondary);
+                        }
+                    }
+                });
+            });
+
+        if reply.is_some() {
+            open = false;
+        }
+
+        let was_open = self.is_open;
+        self.is_open = open;
+
+        if !open && reply.is_none() && was_open {
+            return Some(DialogReply::Closed);
+        }
+
+        reply
+    }
+}

@@ -13,6 +13,7 @@ mod fetch;
 mod generic_dialog_box;
 mod config;
 mod tunnel;
+mod win_utils;
 use app_config::{AppConfig, Keys, TunnelMode, load_config, save_config};
 use generic_dialog_box::{DialogAction, DialogReply, GenericDialogBox};
 use fetch::fetch_keys_data;
@@ -493,7 +494,8 @@ impl eframe::App for MyApp {
 }
 
 fn main() -> eframe::Result {
-    println!();
+    #[cfg(windows)]
+    win_utils::request_elevation();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

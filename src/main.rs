@@ -123,6 +123,21 @@ impl MyApp {
             self.pending_delete_key_index = None;
         }
     }
+
+    fn refresh_keys_data(&mut self) {
+        match fetch_keys_data(self.config.keys.clone()) {
+            Ok(keys) => {
+                self.config.keys = keys;
+            }
+            Err(e) => {
+                self.dialog_box = Some(GenericDialogBox::info(
+                    "Error",
+                    format!("Failed to fetch keys data: {:#?}", e),
+                    "Close",
+                ));
+            }
+        }
+    }
 }
 
 #[derive(PartialEq, Clone)]
@@ -178,19 +193,7 @@ impl eframe::App for MyApp {
             });
 
         if self.current_page == Page::Configs && previous_page != Page::Configs {
-            match fetch_keys_data(self.config.keys.clone()) {
-                Ok(keys) => {
-                    self.config.keys = keys;
-                }
-                Err(e) => {
-                    self.dialog_box = Some(GenericDialogBox::info(
-                        "Error",
-                        format!("Failed to fetch keys data: {:#?}", e),
-                        "Close",
-                    ));
-                }
-            }
-
+            self.refresh_keys_data();
         }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -237,6 +240,8 @@ impl eframe::App for MyApp {
                                                 "OK",
                                             ));
                                         }
+
+                                        self.refresh_keys_data();
                                     },
                                     Err(err) => {
                                         self.dialog_box = Some(GenericDialogBox::info(
@@ -275,10 +280,10 @@ impl eframe::App for MyApp {
                                 ui.label("End Date");
                             });
                             header.col(|ui| {
-                                ui.label("");
+                                ui.label("        ");
                             });
                             header.col(|ui| {
-                                ui.label("");
+                                ui.label("      ");
                             });
                         })
                         .body(|mut body| {
@@ -444,6 +449,7 @@ impl eframe::App for MyApp {
                             }
                             self.wgkey_dialog_show = false;
                             self.wgkey_dialog_input.clear();
+                            self.refresh_keys_data();
                         }
                     })
                     

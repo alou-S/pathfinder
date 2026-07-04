@@ -1,15 +1,66 @@
 // Example configuration file containing static variables
 // Rename to config.rs
 
+use crate::update_dialog::{ARCH, OS};
+
 pub const SERVER_HOSTNAME: &str = "your-server.example.com";
 pub const API_BASE_URL: &str = "https://api.example.com/v1/route";
 pub const PKGREL: &str = "0000\n";
-pub const BINARY_CHECKSUMS: &[(&str, &str)] = &[
-    ("udpproxy", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-    ("wstunnel", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-    ("quiche", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-    ("librespeed", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-];
+
+#[derive(PartialEq)]
+pub enum Binary {
+    Mbtunnel,
+    Udpproxy,
+    Wstunnel,
+    Librespeed,
+    WireguardDll,
+}
+
+impl Binary {
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Mbtunnel => "mbtunnel",
+            Self::Udpproxy    => "udpproxy",
+            Self::Wstunnel    => "wstunnel",
+            Self::Librespeed  => "librespeed-cli",
+            Self::WireguardDll => "wireguard-dll",
+        }
+    }
+
+    pub const fn checksum(&self, os: OS, arch: ARCH) -> &'static str {
+        match self {
+            Self::Udpproxy => match (os, arch) {
+                (OS::Darwin, ARCH::Amd64) => "",
+                (OS::Darwin, ARCH::Arm64) => "",
+                (OS::Linux, ARCH::Amd64) => "",
+                (OS::Linux, ARCH::Arm64) => "",
+                (OS::Windows, ARCH::Amd64) => "",
+                (OS::Windows, ARCH::Arm64) => "",
+            },
+            Self::Wstunnel => match (os, arch) {
+                (OS::Darwin, ARCH::Amd64) => "",
+                (OS::Darwin, ARCH::Arm64) => "",
+                (OS::Linux, ARCH::Amd64) => "",
+                (OS::Linux, ARCH::Arm64) => "",
+                (OS::Windows, ARCH::Amd64) => "",
+                (OS::Windows, ARCH::Arm64) => "",
+            },
+            Self::Librespeed => match (os, arch) {
+                (OS::Darwin, ARCH::Amd64) => "",
+                (OS::Darwin, ARCH::Arm64) => "",
+                (OS::Linux, ARCH::Amd64) => "",
+                (OS::Linux, ARCH::Arm64) => "",
+                (OS::Windows, ARCH::Amd64) => "",
+                (OS::Windows, ARCH::Arm64) => "",
+            },
+            Self::WireguardDll => match (os, arch) {
+                (OS::Windows, ARCH::Amd64) => "",
+                (OS::Windows, ARCH::Arm64) => "",
+                _ => "",
+            },
+        }
+    }
+}
 
 
 

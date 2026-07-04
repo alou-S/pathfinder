@@ -1,8 +1,8 @@
 use chacha20::ChaCha20;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
+use chrono::{Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use chrono::{NaiveDate, Local};
 use xxhash_rust::xxh3::xxh3_64;
 use zstd::bulk::{compress, decompress};
 
@@ -41,8 +41,8 @@ impl Keys {
             None => String::new(),
             Some(date) => {
                 let today = Local::now().date_naive();
-                let diff  = date.signed_duration_since(today);
-                let days  = diff.num_days();
+                let diff = date.signed_duration_since(today);
+                let days = diff.num_days();
                 let date_formatted = date.format("%b %e, %Y");
 
                 if days == 0 {
@@ -66,7 +66,7 @@ impl Keys {
 pub enum TunnelMode {
     Auto,
     TCP,
-    UDP
+    UDP,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -78,8 +78,8 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        Self { 
-            keys: Vec::new(), 
+        Self {
+            keys: Vec::new(),
             dark_mode: true,
             tunnel_mode: TunnelMode::Auto,
         }

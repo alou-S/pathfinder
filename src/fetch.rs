@@ -1,25 +1,25 @@
-use crate::app_config::{Keys};
+use crate::app_config::Keys;
 use crate::config::API_URL;
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 
 pub fn fetch_keys_data(mut keys: Vec<Keys>) -> Result<Vec<Keys>, Box<dyn std::error::Error>> {
-    
     for key_item in &mut keys {
         let key = key_item.key.clone();
         let url = format!("{}/key/info", API_URL);
-        let mut response = match ureq::get(&url)
+        let response = match reqwest::blocking::Client::new()
+            .get(&url)
             .header("MBTUNNEL-KEY", &key)
-            .call()
+            .send()
         {
             Ok(resp) => resp,
-            Err(ureq::Error::StatusCode(403)) => {
+            Err(e) if e.status() == Some(reqwest::StatusCode::FORBIDDEN) => {
                 key_item.id = Some("Invalid Key".into());
                 continue;
             }
-            Err(e) => return Err(e.into()), // propagate other errors
+            Err(e) => return Err(e.into()),
         };
 
-        let body = response.body_mut().read_to_string().context("Failed to read API response")?;
+        let body = response.text().context("Failed to read API response")?;
 
         let parsed: Keys = serde_json::from_str(&body).context("Failed to parse API response")?;
 

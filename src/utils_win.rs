@@ -1,7 +1,10 @@
-use std::{env, process::Command};
+use std::os::windows::process::CommandExt;
+use std::{
+    env,
+    path::PathBuf,
+    process::{Child, Command, Stdio},
+};
 
-
-#[cfg(windows)]
 pub fn request_elevation() {
     let is_admin = Command::new("net")
         .args(["session"])
@@ -30,4 +33,18 @@ pub fn request_elevation() {
 
         std::process::exit(0);
     }
+}
+
+pub fn spawn_detached_process(path: PathBuf) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
+
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+    Command::new(path)
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
 }

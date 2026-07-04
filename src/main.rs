@@ -3,7 +3,7 @@
 use eframe::egui::{self, UiKind};
 use egui_extras::{TableBuilder, Column};
 use rfd::FileDialog;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 use regex::Regex;
 use std::sync::OnceLock;
 use std::fmt;
@@ -13,36 +13,41 @@ mod fetch;
 mod generic_dialog_box;
 mod config;
 mod tunnel;
-mod win_utils;
+mod update_dialog;
+#[cfg(target_os = "windows")]
+mod utils_win;
+#[cfg(not(target_os = "windows"))]
+mod utils_nix;
 use app_config::{AppConfig, Keys, TunnelMode, load_config, save_config};
 use generic_dialog_box::{DialogAction, DialogReply, GenericDialogBox};
 use fetch::fetch_keys_data;
+use update_dialog::UpdateDialog;
 
 static WG_KEY_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+static APPDATA_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-
-fn config_path() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local_app_data)
-                .join("mbtunnel")
-                .join("config.dat");
+pub fn appdata_path() -> &'static PathBuf {
+    APPDATA_PATH.get_or_init(|| {
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+                return PathBuf::from(local_app_data)
+                    .join("mbtunnel");
+            }
         }
-    }
 
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("mbtunnel")
-                .join("config.dat");
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home)
+                    .join(".local")
+                    .join("share")
+                    .join("mbtunnel");
+            }
         }
-    }
 
-    PathBuf::from("config.dat")
+        PathBuf::from("./")
+    })
 }
 
 struct Opt<T>(Option<T>);
@@ -66,18 +71,29 @@ struct MyApp {
     pending_delete_key_index: Option<usize>,
     ignore_save_error: bool,
     load_config_error: Option<Box<dyn std::error::Error>>,
+    update_dialog: Option<UpdateDialog>,
+    dir_creation_error: Option<String>,
 }
 
 impl MyApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         _cc.egui_ctx.set_pixels_per_point(1.25);
 
+        let mut dir_creation_error = None;
         let mut load_config_error: Option<Box<dyn std::error::Error>> = None;
 
-        let config = match load_config(config_path()) {
-            Ok(cfg) => cfg,
-            Err(err) => {
-                load_config_error = Some(err);
+        let config = match fs::create_dir_all(appdata_path()) {
+            Ok(_) => {
+                match load_config(appdata_path().join("config.dat")) {
+                    Ok(cfg) => cfg,
+                    Err(err) => {
+                        load_config_error = Some(err);
+                        AppConfig::default()
+                    }
+                }
+            }
+            Err(e) => {
+                dir_creation_error = Some(e.to_string());
                 AppConfig::default()
             }
         };
@@ -88,6 +104,11 @@ impl MyApp {
             _cc.egui_ctx.set_visuals(egui::Visuals::light());
         }
 
+        let update_dialog = if dir_creation_error.is_none() {
+            Some(UpdateDialog::new(_cc.egui_ctx.clone()))
+        } else {
+            None
+        };
 
         Self {
             current_page: Page::Tunnel,
@@ -99,6 +120,8 @@ impl MyApp {
             load_config_error,
             ignore_save_error: false,
             pending_delete_key_index: None,
+            update_dialog,
+            dir_creation_error,
         }
     }
 
@@ -116,6 +139,9 @@ impl MyApp {
             }
             (DialogAction::IgnoreSaveError, DialogReply::Primary) => {
                 self.ignore_save_error = true;
+            }
+            (DialogAction::Exit, _) => {
+                std::process::exit(1);
             }
             _ => {}
         }
@@ -172,13 +198,45 @@ fn parse_wg_config(path: PathBuf) -> Result<String, Box<dyn std::error::Error>> 
 // This is the main trait you implement — eframe calls `ui()` every frame.
 impl eframe::App for MyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some(err) = &self.dir_creation_error {
+            if self.dialog_box.is_none() {
+                let mut dialog = GenericDialogBox::info(
+                    "Fatal Error",
+                    format!("Failed to create AppData directory:\n{}", err),
+                    "Exit",
+                );
+                dialog.action = DialogAction::Exit;
+                self.dialog_box = Some(dialog);
+            }
+
+            let mut dialog_event = None;
+            if let Some(dialog) = self.dialog_box.as_mut() {
+                if let Some(reply) = dialog.show(ui.ctx()) {
+                    dialog_event = Some((dialog.action, reply));
+                }
+            }
+
+            if let Some((action, reply)) = dialog_event {
+                self.dialog_box = None;
+                self.handle_dialog_reply(action, reply);
+            }
+            return;
+        }
+
+        if let Some(dialog) = &mut self.update_dialog {
+            if dialog.show(ui.ctx()) {
+                self.update_dialog = None;
+            }
+            return;
+        }
+
         let config_before_frame = self.config.clone();
         let previous_page = self.current_page.clone();
 
         egui::Panel::left("sidebar")
             .resizable(false)
             .exact_size(160.0)
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.add_space(8.0);
                 ui.vertical_centered(|ui| {
                     ui.heading("📋 Menu");
@@ -197,7 +255,7 @@ impl eframe::App for MyApp {
             self.refresh_keys_data();
         }
 
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             match &self.current_page {
                 Page::Tunnel => {
                     ui.heading("🚀 Tunnel");
@@ -268,8 +326,8 @@ impl eframe::App for MyApp {
                         .column(Column::auto())
                         .column(Column::auto())
                         .column(Column::remainder())
-                        .column(Column::auto())
-                        .column(Column::auto())
+                        .column(Column::auto().at_least(60.0))
+                        .column(Column::auto().at_least(40.0))
                         .header(20.0, |mut header| {
                             header.col(|ui| {
                                 ui.label("NetID");
@@ -478,7 +536,7 @@ impl eframe::App for MyApp {
         }
 
         if self.config != config_before_frame {
-            if let Err(err) = save_config(&self.config, config_path()) {
+            if let Err(err) = save_config(&self.config, appdata_path().join("config.dat")) {
                 if !self.ignore_save_error {
                     self.dialog_box = Some(GenericDialogBox::two_buttons(
                     "Error saving config",
@@ -493,9 +551,45 @@ impl eframe::App for MyApp {
     }
 }
 
+fn handle_update_state() {
+    let current_exec = std::env::current_exe().unwrap();
+    let exec_name = current_exec.file_name().unwrap().to_str().unwrap();
+    let exec_path = current_exec.parent().unwrap();
+    
+    let needle = ".updatefile";
+
+    let new_exec_name = if let Some(pos) = exec_name.rfind(needle) {
+    format!("{}{}", &exec_name[..pos], &exec_name[pos + needle.len()..])
+    } else {
+        #[cfg(target_os = "windows")]
+        let updatefile_path  = current_exec.with_extension("updatefile.exe");
+        #[cfg(not(target_os = "windows"))]
+        let updatefile_path = current_exec.with_added_extension("updatefile");
+
+        let _ = fs::remove_file(updatefile_path);
+        return
+    };
+
+    let new_exec = exec_path.join(new_exec_name);
+
+
+    let _ = fs::remove_file(&new_exec);
+    let _ = fs::copy(current_exec, &new_exec);
+
+    #[cfg(target_os = "windows")]
+    crate::utils_win::spawn_detached_process(new_exec).unwrap();
+
+    #[cfg(not(target_os = "windows"))]
+    crate::utils_nix::spawn_detached_process(new_exec).unwrap();
+
+    std::process::exit(0);
+}
+
 fn main() -> eframe::Result {
-    #[cfg(windows)]
-    win_utils::request_elevation();
+    #[cfg(target_os = "windows")]
+    utils_win::request_elevation();
+
+    handle_update_state();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

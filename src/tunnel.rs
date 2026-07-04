@@ -1,12 +1,12 @@
 #![allow(unused)]
 use crate::app_config::TunnelMode;
-use std::time::Duration;
-use tokio::time::sleep;
 use reqwest::Version;
 use std::net::{IpAddr, Ipv4Addr};
+use std::time::Duration;
+use tokio::time::sleep;
 
 struct TunnelState {
-    mode: TunnelMode
+    mode: TunnelMode,
 }
 
 async fn test_udp() -> bool {
@@ -57,23 +57,14 @@ async fn test_udp() -> bool {
     false
 }
 
-async fn start_tunnel_tcp(port: u16, remote_addr: &str) {
-    
+fn start_tunnel_tcp(local_port: u16, remote_addr: &str) {}
 
-}
+fn start_tunnel_udp(local_port: u16, remote_addr: &str) {}
 
-pub fn start_tunnel(mut mode: TunnelMode) {
+pub fn start_tunnel(mut mode: TunnelMode) {}
 
-}
+pub fn stop_tunnel() {}
 
-pub fn stop_tunnel() {
+pub fn start_wireguard() {}
 
-}
-
-pub fn start_wireguard() {
-
-}
-
-pub fn stop_wireguard() {
-
-}
+pub fn stop_wireguard() {}

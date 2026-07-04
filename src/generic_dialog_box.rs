@@ -13,8 +13,9 @@ pub enum DialogAction {
     ClearAllKeys,
     ClearSpecificKey,
     IgnoreSaveError,
+    RetryUpdate,
+    Exit,
 }
-
 
 pub struct GenericDialogBox {
     dialog_box_title: String,
@@ -26,7 +27,11 @@ pub struct GenericDialogBox {
 }
 
 impl GenericDialogBox {
-    pub fn info(title: impl Into<String>, message: impl Into<String>, button: impl Into<String>) -> Self {
+    pub fn info(
+        title: impl Into<String>,
+        message: impl Into<String>,
+        button: impl Into<String>,
+    ) -> Self {
         Self {
             dialog_box_title: title.into(),
             dialog_box_message: message.into(),

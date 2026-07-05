@@ -56,7 +56,7 @@ impl Binary {
             Self::WireguardDll => match (os, arch) {
                 (OS::Windows, ARCH::Amd64) => "",
                 (OS::Windows, ARCH::Arm64) => "",
-                _ => "",
+                _ => unreachable!(),
             },
         }
     }

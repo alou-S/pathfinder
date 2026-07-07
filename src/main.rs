@@ -6,7 +6,7 @@ use regex::Regex;
 use rfd::FileDialog;
 use std::fmt;
 use std::sync::OnceLock;
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, time::Duration};
 
 mod app_config;
 mod config;
@@ -18,6 +18,7 @@ mod update_dialog;
 mod utils_nix;
 #[cfg(target_os = "windows")]
 mod utils_win;
+use crate::tunnel::{Tunnel, TunnelStatus};
 use app_config::{AppConfig, Keys, TunnelMode, load_config, save_config};
 use fetch::fetch_keys_data;
 use generic_dialog_box::{DialogAction, DialogReply, GenericDialogBox};
@@ -72,6 +73,34 @@ struct MyApp {
     load_config_error: Option<Box<dyn std::error::Error>>,
     update_dialog: Option<UpdateDialog>,
     dir_creation_error: Option<String>,
+    tunnel: Tunnel,
+}
+
+fn show_ansi_log(ui: &mut egui::Ui, log: &[u8], rows: f32, font: f32) {
+    let text = String::from_utf8_lossy(log);
+    let height = ui.text_style_height(&egui::TextStyle::Monospace) * rows;
+
+    let theme = egui_sgr::EguiAnsiTheme::default();
+    let mut job = egui_sgr::ansi_to_layout_job(&text, &theme);
+
+    for section in &mut job.sections {
+        section.format.font_id = egui::FontId::monospace(font);
+    }
+
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+        .inner_margin(egui::Margin::same(6))
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height(height)
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.add(egui::Label::new(job));
+                });
+        });
 }
 
 impl MyApp {
@@ -119,6 +148,7 @@ impl MyApp {
             pending_delete_key_index: None,
             update_dialog,
             dir_creation_error,
+            tunnel: Tunnel::default(),
         }
     }
 
@@ -163,20 +193,75 @@ impl MyApp {
         }
     }
 
+    fn show_home_page(&mut self, ui: &mut egui::Ui) {
+        ui.heading("🏠 Home");
+        ui.separator();
+    }
+
     fn show_tunnel_page(&mut self, ui: &mut egui::Ui) {
         ui.heading("🚀 Tunnel");
         ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Tunnel Mode:");
-            ui.radio_value(&mut self.config.tunnel_mode, TunnelMode::Auto, "Auto");
-            ui.radio_value(&mut self.config.tunnel_mode, TunnelMode::TCP, "TCP");
-            ui.radio_value(&mut self.config.tunnel_mode, TunnelMode::UDP, "UDP");
-        });
+
+        let tunnel_state = {
+            let guard = self.tunnel.state.lock().unwrap();
+            guard.clone()
+        };
+
+        let state_text = match &tunnel_state.status {
+            TunnelStatus::Starting | TunnelStatus::DetectingMode | TunnelStatus::DetectingPort => {
+                "Tunnel State: Starting".to_owned()
+            }
+            TunnelStatus::Failed(err) => {
+                format!("Tunnel State: Failed to Start {}", err)
+            }
+            TunnelStatus::Exited(code) => {
+                format!("Tunnel State: Exited {}", Opt(*code))
+            }
+            TunnelStatus::Running => "Tunnel State: Running".to_owned(),
+            TunnelStatus::Stopping => "Tunnel State: Stopping".to_owned(),
+            TunnelStatus::Stopped => "Tunnel State: Stopped".to_owned(),
+        };
+
+        ui.label(state_text);
+
+        if tunnel_state.status == TunnelStatus::Stopped {
+            ui.horizontal(|ui| {
+                ui.label("Tunnel Mode:");
+                ui.radio_value(&mut self.config.tunnel_mode, TunnelMode::Auto, "Auto");
+                ui.radio_value(&mut self.config.tunnel_mode, TunnelMode::TCP, "TCP");
+                ui.radio_value(&mut self.config.tunnel_mode, TunnelMode::UDP, "UDP");
+            });
+
+            ui.label("Tunnel Port: -");
+        } else {
+            let mode_text = match tunnel_state.mode {
+                TunnelMode::Auto => "Tunnel Mode: Detecting",
+                TunnelMode::UDP => "Tunnel Mode: UDP",
+                TunnelMode::TCP => "Tunnel Mode: TCP",
+            };
+
+            ui.label(mode_text);
+
+            if tunnel_state.port.is_some() {
+                ui.label(format!("Tunnel Port: {}", tunnel_state.port.unwrap()));
+            } else {
+                ui.label("Tunnel Port: Detecting");
+            }
+        }
+
+        ui.add_space(8.0);
+        if tunnel_state.status == TunnelStatus::Stopped {
+            if ui.button("Start Tunnel").clicked() {
+                crate::tunnel::start_tunnel(self.config.tunnel_mode, &self.tunnel);
+            }
+        } else {
+            if ui.button("Stop Tunnel").clicked() {
+                crate::tunnel::stop_tunnel(&self.tunnel);
+            }
+        }
 
         ui.add_space(12.0);
-        if ui.button("Go to Settings").clicked() {
-            self.current_page = Page::Settings;
-        }
+        show_ansi_log(ui, &tunnel_state.log, 10.0, 10.0);
     }
 
     fn show_config_page(&mut self, ui: &mut egui::Ui) {
@@ -426,6 +511,7 @@ impl MyApp {
 
 #[derive(PartialEq, Clone)]
 enum Page {
+    Home,
     Tunnel,
     Configs,
     Pathfinder,
@@ -499,13 +585,32 @@ impl eframe::App for MyApp {
                     ui.heading("📋 Menu");
                 });
                 ui.separator();
-                ui.add_space(4.0);
+                ui.add_space(6.0);
 
-                ui.selectable_value(&mut self.current_page, Page::Tunnel, "🚀 Tunnel");
-                ui.selectable_value(&mut self.current_page, Page::Configs, "📁 Configs");
-                ui.selectable_value(&mut self.current_page, Page::Pathfinder, "🧭 Pathfinder");
-                ui.selectable_value(&mut self.current_page, Page::Settings, "⚙ Settings");
-                ui.selectable_value(&mut self.current_page, Page::About, "ℹ About");
+                let items = [
+                    (Page::Home, "🏠 Home"),
+                    (Page::Tunnel, "🚀 Tunnel"),
+                    (Page::Configs, "📁 Configs"),
+                    (Page::Pathfinder, "🧭 Pathfinder"),
+                    (Page::Settings, "⚙ Settings"),
+                    (Page::About, "ℹ About"),
+                ];
+
+                ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+                    for (page, label) in items {
+                        let text = egui::RichText::new(label).size(14.0);
+
+                        if ui
+                            .add_sized(
+                                [ui.available_width(), 26.0],
+                                egui::Button::selectable(self.current_page == page, text),
+                            )
+                            .clicked()
+                        {
+                            self.current_page = page;
+                        }
+                    }
+                });
             });
 
         if self.current_page == Page::Configs && previous_page != Page::Configs {
@@ -513,6 +618,7 @@ impl eframe::App for MyApp {
         }
 
         egui::CentralPanel::default().show(ui, |ui| match &self.current_page {
+            Page::Home => self.show_home_page(ui),
             Page::Tunnel => self.show_tunnel_page(ui),
             Page::Configs => self.show_config_page(ui),
             Page::Pathfinder => self.show_pathfinder_page(ui),
@@ -557,6 +663,8 @@ impl eframe::App for MyApp {
                 }
             }
         }
+
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
 }
 

@@ -89,7 +89,7 @@ fn binary_url(binary: &Binary) -> String {
     )
 }
 
-fn binary_path(binary: &Binary) -> PathBuf {
+pub fn binary_path(binary: &Binary) -> PathBuf {
     if binary == &Binary::Mbtunnel {
         let mut exec_path = env::current_exe().unwrap();
 

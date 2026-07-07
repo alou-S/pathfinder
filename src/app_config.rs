@@ -62,7 +62,7 @@ impl Keys {
     }
 }
 
-#[derive(PartialEq, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum TunnelMode {
     Auto,
     TCP,
@@ -70,6 +70,7 @@ pub enum TunnelMode {
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub keys: Vec<Keys>,
     pub dark_mode: bool,

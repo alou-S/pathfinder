@@ -1,6 +1,6 @@
-use std::os::windows::process::CommandExt;
 use std::{
     env,
+    os::windows::process::CommandExt,
     path::PathBuf,
     process::{Child, Command, Stdio},
 };
@@ -35,9 +35,7 @@ pub fn request_elevation() {
     }
 }
 
-pub fn spawn_detached_process(path: PathBuf) -> io::Result<()> {
-    use std::os::windows::process::CommandExt;
-
+pub fn spawn_detached_process(path: PathBuf) -> std::io::Result<Child> {
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 

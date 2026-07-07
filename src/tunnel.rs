@@ -1,18 +1,100 @@
 #![allow(unused)]
-use crate::app_config::TunnelMode;
+use flate2::{Compression, write::GzEncoder};
+use getrandom::Error;
+use owo_colors::OwoColorize;
 use reqwest::Version;
-use std::net::{IpAddr, Ipv4Addr};
-use std::time::Duration;
-use tokio::time::sleep;
+use std::{
+    env::args,
+    io::{Read, Result},
+    net::{IpAddr, Ipv4Addr},
+    path::PathBuf,
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
+use tokio::runtime::Runtime;
 
-struct TunnelState {
-    mode: TunnelMode,
+use crate::{
+    app_config::TunnelMode,
+    config::{Binary, SERVER_HOSTNAME},
+    tunnel::TunnelStatus::Stopped,
+    update_dialog::binary_path,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TunnelStatus {
+    Starting,
+    DetectingMode,
+    DetectingPort,
+    Running,
+    Stopping,
+    Stopped,
+    Failed(String),
+    Exited(Option<i32>),
+}
+
+#[derive(Clone)]
+pub struct TunnelState {
+    pub status: TunnelStatus,
+    pub mode: TunnelMode,
+    pub port: Option<u16>,
+    pub log: Vec<u8>,
+    log_offset: usize,
+}
+
+pub struct Tunnel {
+    pub state: Arc<Mutex<TunnelState>>,
+    pub child: Arc<Mutex<Option<Child>>>,
+}
+
+impl Tunnel {
+    pub fn default() -> Self {
+        Tunnel {
+            state: Arc::new(Mutex::new(TunnelState {
+                status: Stopped,
+                mode: TunnelMode::Auto,
+                port: None,
+                log: Vec::new(),
+                log_offset: 0,
+            })),
+            child: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+enum LogType {
+    Info,
+    Warn,
+    Error,
+}
+
+fn append_log(log: &mut Vec<u8>, log_type: LogType, msg: String) {
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+
+    if !log.is_empty() && !log.ends_with(b"\n") {
+        log.push(b'\n');
+    }
+
+    let type_message = match log_type {
+        LogType::Info => "INFO".green().to_string(),
+        LogType::Warn => "WARN".yellow().to_string(),
+        LogType::Error => "ERROR".red().to_string(),
+    };
+
+    let final_message = format!(
+        "{}  {} {} {}\n",
+        timestamp.bright_black(),
+        "mbtunnel:".bright_black(),
+        type_message,
+        msg
+    );
+    log.extend_from_slice(final_message.as_bytes());
 }
 
 async fn test_udp() -> bool {
     let mut handles = vec![];
 
-    println!("Testing if UDP/443 is open...");
     for i in 1..=3 {
         let handle = tokio::spawn(async move {
             let client = match reqwest::Client::builder()
@@ -44,7 +126,7 @@ async fn test_udp() -> bool {
         handles.push(handle);
 
         if i < 3 {
-            sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
@@ -57,13 +139,248 @@ async fn test_udp() -> bool {
     false
 }
 
-fn start_tunnel_tcp(local_port: u16, remote_addr: &str) {}
+pub fn start_tunnel(mode: TunnelMode, tunnel: &Tunnel) {
+    let state = Arc::clone(&tunnel.state);
+    let child = Arc::clone(&tunnel.child);
 
-fn start_tunnel_udp(local_port: u16, remote_addr: &str) {}
+    thread::spawn(move || {
+        if let Err(err) = run_tunnel_worker(mode, Arc::clone(&state), child) {
+            let msg = err.to_string();
+            if let Ok(mut s) = state.lock() {
+                s.status = TunnelStatus::Failed(msg.clone());
+                append_log(&mut s.log, LogType::Error, msg);
+            }
+        }
+    });
+}
 
-pub fn start_tunnel(mut mode: TunnelMode) {}
+fn run_tunnel_worker(
+    mut mode: TunnelMode,
+    state: Arc<Mutex<TunnelState>>,
+    child_slot: Arc<Mutex<Option<Child>>>,
+) -> std::io::Result<()> {
+    {
+        let mut s = state.lock().unwrap();
+        s.status = TunnelStatus::DetectingMode;
+        s.mode = mode;
+        s.port = None;
 
-pub fn stop_tunnel() {}
+        append_log(&mut s.log, LogType::Info, "Starting Tunnel...".to_string());
+    }
+
+    if mode == TunnelMode::Auto {
+        {
+            let mut s = state.lock().unwrap();
+            append_log(
+                &mut s.log,
+                LogType::Info,
+                "Testing if UDP/443 is open...".to_string(),
+            );
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        mode = if rt.block_on(test_udp()) {
+            TunnelMode::UDP
+        } else {
+            TunnelMode::TCP
+        };
+
+        let mut s = state.lock().unwrap();
+        s.mode = mode;
+    }
+
+    let wss = format!("wss://{}:443", SERVER_HOSTNAME);
+
+    let (tunnel_path, tunnel_args) = match mode {
+        TunnelMode::UDP => (
+            binary_path(&Binary::Udpproxy),
+            vec![
+                "-b".to_string(),
+                "127.0.0.1".to_string(),
+                "-l".to_string(),
+                "0".to_string(),
+                "-h".to_string(),
+                SERVER_HOSTNAME.to_string(),
+                "-r".to_string(),
+                "443".to_string(),
+                "-d".to_string(),
+            ],
+        ),
+        TunnelMode::TCP => (
+            binary_path(&Binary::Wstunnel),
+            vec![
+                "client".to_string(),
+                "--http-upgrade-path-prefix".to_string(),
+                "/ws".to_string(),
+                wss,
+                "-L".to_string(),
+                "udp://127.0.0.1:0:127.0.0.1:51280?timeout_sec=0".to_string(),
+            ],
+        ),
+        TunnelMode::Auto => unreachable!(),
+    };
+
+    let mut cmd = Command::new(tunnel_path);
+    cmd.args(&tunnel_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = ur_taking_me_with_you::spawn_dying_with_parent(cmd)?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    {
+        let mut slot = child_slot.lock().unwrap();
+        *slot = Some(child);
+    }
+
+    if let Some(mut out) = stdout {
+        let state = Arc::clone(&state);
+        thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match out.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(mut s) = state.lock() {
+                            s.log.extend_from_slice(&chunk[..n]);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    if let Some(mut err) = stderr {
+        let state = Arc::clone(&state);
+        thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match err.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Ok(mut s) = state.lock() {
+                            s.log.extend_from_slice(&chunk[..n]);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    {
+        let mut s = state.lock().unwrap();
+        s.status = TunnelStatus::DetectingPort;
+    }
+
+    let re = regex::Regex::new(r"127\.0\.0\.1:(\d+)").unwrap();
+
+    loop {
+        {
+            let mut exited = None;
+            let mut stopped = false;
+
+            if let Ok(mut slot) = child_slot.lock() {
+                if slot.is_none() {
+                    stopped = true;
+                } else if let Some(child) = slot.as_mut() {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        exited = Some(status.code());
+                    }
+                }
+            }
+
+            if stopped {
+                break;
+            }
+
+            if let Some(code) = exited {
+                let mut s = state.lock().unwrap();
+                s.status = TunnelStatus::Exited(code);
+                append_log(
+                    &mut s.log,
+                    LogType::Error,
+                    format!("Tunnel Exited with code {}", crate::Opt(code)),
+                );
+                break;
+            }
+        }
+
+        {
+            let mut s = state.lock().unwrap();
+
+            if s.port.is_none() {
+                let new_log = &s.log[s.log_offset..];
+                let log = String::from_utf8_lossy(new_log);
+
+                s.port = log.lines().find_map(|line| {
+                    re.captures(line)
+                        .and_then(|caps| caps.get(1))
+                        .and_then(|m| m.as_str().parse::<u16>().ok())
+                });
+
+                s.log_offset = s.log.len();
+
+                if s.port.is_some() {
+                    s.status = TunnelStatus::Running;
+                }
+            }
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    Ok(())
+}
+
+pub fn stop_tunnel(tunnel: &Tunnel) {
+    {
+        let mut state = tunnel.state.lock().unwrap();
+        state.status = TunnelStatus::Stopping;
+        append_log(
+            &mut state.log,
+            LogType::Info,
+            "Stopping Tunnel...".to_string(),
+        );
+    }
+
+    let maybe_child = tunnel.child.lock().unwrap().take();
+
+    if let Some(mut child) = maybe_child {
+        let kill_res = child.kill();
+        let wait_res = child.wait();
+
+        let mut state = tunnel.state.lock().unwrap();
+        state.port = None;
+
+        match (kill_res, wait_res) {
+            (_, Ok(_)) => state.status = TunnelStatus::Stopped,
+            (Err(e), _) => {
+                state.status = TunnelStatus::Failed(format!("Kill Failed"));
+                append_log(
+                    &mut state.log,
+                    LogType::Error,
+                    format!("Kill Failed: {}", e),
+                );
+            }
+            (_, Err(e)) => {
+                state.status = TunnelStatus::Failed(format!("Wait Failed"));
+                append_log(
+                    &mut state.log,
+                    LogType::Error,
+                    format!("Wait Failed: {}", e),
+                );
+            }
+        }
+    } else {
+        let mut state = tunnel.state.lock().unwrap();
+        state.status = TunnelStatus::Stopped;
+        state.port = None;
+    }
+}
 
 pub fn start_wireguard() {}
 

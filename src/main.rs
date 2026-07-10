@@ -1,7 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use eframe::egui::{self, UiKind};
-use egui_extras::{Column, TableBuilder};
+use egui_extras::{Column, Size, StripBuilder, TableBuilder};
 use regex::Regex;
 use rfd::FileDialog;
 use std::fmt;
@@ -18,14 +18,16 @@ mod update_dialog;
 mod utils_nix;
 #[cfg(target_os = "windows")]
 mod utils_win;
-use crate::tunnel::{Tunnel, TunnelStatus};
-use app_config::{AppConfig, Keys, TunnelMode, load_config, save_config};
+use crate::tunnel::{Tunnel, TunnelState, TunnelStatus};
+use app_config::{AppConfig, Key, TunnelMode, load_config, save_config};
 use fetch::fetch_keys_data;
 use generic_dialog_box::{DialogAction, DialogReply, GenericDialogBox};
 use update_dialog::UpdateDialog;
 
 static WG_KEY_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 static APPDATA_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+const APP_WINDOW_SIZE: (f32, f32) = (640.0, 508.0);
 
 pub fn appdata_path() -> &'static PathBuf {
     APPDATA_PATH.get_or_init(|| {
@@ -74,11 +76,12 @@ struct MyApp {
     update_dialog: Option<UpdateDialog>,
     dir_creation_error: Option<String>,
     tunnel: Tunnel,
+    base_style: egui::Style,
 }
 
-fn show_ansi_log(ui: &mut egui::Ui, log: &[u8], rows: f32, font: f32) {
+fn show_ansi_log(ui: &mut egui::Ui, log: &[u8], font: f32) {
     let text = String::from_utf8_lossy(log);
-    let height = ui.text_style_height(&egui::TextStyle::Monospace) * rows;
+    let height = ui.available_height();
 
     let theme = egui_sgr::EguiAnsiTheme::default();
     let mut job = egui_sgr::ansi_to_layout_job(&text, &theme);
@@ -103,10 +106,25 @@ fn show_ansi_log(ui: &mut egui::Ui, log: &[u8], rows: f32, font: f32) {
         });
 }
 
+fn update_zoom(ui_zoom: f32, font_zoom: f32, mut style: egui::Style, ctx: &egui::Context) {
+    ctx.set_zoom_factor(ui_zoom);
+
+    let (x, y) = APP_WINDOW_SIZE;
+    let size = egui::Vec2::new(x, y);
+
+    if (ctx.viewport_rect().size() - size).length() > 5.0 {
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+    }
+
+    for font_id in style.text_styles.values_mut() {
+        font_id.size *= font_zoom;
+    }
+
+    ctx.set_global_style(style);
+}
+
 impl MyApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        _cc.egui_ctx.set_pixels_per_point(1.25);
-
         let mut dir_creation_error = None;
         let mut load_config_error: Option<Box<dyn std::error::Error>> = None;
 
@@ -124,6 +142,19 @@ impl MyApp {
             }
         };
 
+        let mut base_style = egui::Style::default();
+        base_style.text_styles.insert(
+            egui::TextStyle::Name("subheading".into()),
+            egui::FontId::new(15.0, egui::FontFamily::Proportional),
+        );
+
+        update_zoom(
+            config.ui_zoom,
+            config.font_zoom,
+            base_style.clone(),
+            &_cc.egui_ctx,
+        );
+
         if config.dark_mode {
             _cc.egui_ctx.set_visuals(egui::Visuals::dark());
         } else {
@@ -136,8 +167,12 @@ impl MyApp {
             None
         };
 
+        _cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        _cc.egui_ctx
+            .send_viewport_cmd(egui::ViewportCommand::Resizable(false));
+
         Self {
-            current_page: Page::Tunnel,
+            current_page: Page::Home,
             wgkey_dialog_show: false,
             wgkey_dialog_input: String::new(),
             wgkey_dialog_text_hidden: true,
@@ -149,6 +184,7 @@ impl MyApp {
             update_dialog,
             dir_creation_error,
             tunnel: Tunnel::default(),
+            base_style,
         }
     }
 
@@ -178,6 +214,42 @@ impl MyApp {
         }
     }
 
+    pub fn handle_zoom_shortcut(&mut self, ui: &mut egui::Ui) {
+        let input = ui.ctx().input(|i| i.clone());
+
+        if input.modifiers.ctrl && !input.modifiers.shift && !input.modifiers.alt {
+            if input.key_pressed(egui::Key::Plus) || input.key_pressed(egui::Key::Equals) {
+                let zoom_factor = self.config.ui_zoom + 0.05;
+                self.config.ui_zoom = zoom_factor.clamp(0.5, 3.0);
+            }
+
+            if input.key_pressed(egui::Key::Minus) {
+                let zoom_factor = self.config.ui_zoom - 0.05;
+                self.config.ui_zoom = zoom_factor.clamp(0.5, 3.0);
+            }
+
+            if input.key_pressed(egui::Key::Num0) {
+                self.config.ui_zoom = 1.25;
+            }
+        }
+
+        if input.modifiers.ctrl && input.modifiers.shift && !input.modifiers.alt {
+            if input.key_pressed(egui::Key::Plus) || input.key_pressed(egui::Key::Equals) {
+                let zoom_factor = self.config.font_zoom + 0.025;
+                self.config.font_zoom = zoom_factor.clamp(0.7, 1.3);
+            }
+
+            if input.key_pressed(egui::Key::Minus) {
+                let zoom_factor = self.config.font_zoom - 0.025;
+                self.config.font_zoom = zoom_factor.clamp(0.7, 1.3);
+            }
+
+            if input.key_pressed(egui::Key::Num0) {
+                self.config.font_zoom = 1.05;
+            }
+        }
+    }
+
     fn refresh_keys_data(&mut self) {
         match fetch_keys_data(self.config.keys.clone()) {
             Ok(keys) => {
@@ -193,22 +265,11 @@ impl MyApp {
         }
     }
 
-    fn show_home_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("🏠 Home");
-        ui.separator();
-    }
+    fn show_vpn_frame(&mut self, ui: &mut egui::Ui) {}
 
-    fn show_tunnel_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("🚀 Tunnel");
-        ui.separator();
-
-        let tunnel_state = {
-            let guard = self.tunnel.state.lock().unwrap();
-            guard.clone()
-        };
-
+    fn show_tunnel_frame(&mut self, ui: &mut egui::Ui, tunnel_state: TunnelState) {
         let state_text = match &tunnel_state.status {
-            TunnelStatus::Starting | TunnelStatus::DetectingMode | TunnelStatus::DetectingPort => {
+            TunnelStatus::DetectingMode | TunnelStatus::DetectingPort => {
                 "Tunnel State: Starting".to_owned()
             }
             TunnelStatus::Failed(err) => {
@@ -226,10 +287,14 @@ impl MyApp {
 
         if tunnel_state.status == TunnelStatus::Stopped {
             ui.horizontal(|ui| {
-                ui.label("Tunnel Mode:");
-                ui.radio_value(&mut self.config.tunnel_mode, TunnelMode::Auto, "Auto");
-                ui.radio_value(&mut self.config.tunnel_mode, TunnelMode::TCP, "TCP");
-                ui.radio_value(&mut self.config.tunnel_mode, TunnelMode::UDP, "UDP");
+                ui.label("Tunnel Mode: ");
+                egui::ComboBox::from_id_salt("tunnel_mode_select")
+                    .selected_text(self.config.tunnel_mode.label())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.config.tunnel_mode, TunnelMode::Auto, "Auto");
+                        ui.selectable_value(&mut self.config.tunnel_mode, TunnelMode::TCP, "TCP");
+                        ui.selectable_value(&mut self.config.tunnel_mode, TunnelMode::UDP, "UDP");
+                    });
             });
 
             ui.label("Tunnel Port: -");
@@ -261,15 +326,65 @@ impl MyApp {
         }
 
         ui.add_space(12.0);
-        show_ansi_log(ui, &tunnel_state.log, 10.0, 10.0);
     }
 
-    fn show_config_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("📁 Configs");
+    fn show_home_page(&mut self, ui: &mut egui::Ui) {
+        ui.heading("🏠 Home");
+        ui.separator();
+
+        let tunnel_state = {
+            let guard = self.tunnel.state.lock().unwrap();
+            guard.clone()
+        };
+
+        ui.allocate_ui(egui::vec2(ui.available_width(), 200.0), |ui| {
+            StripBuilder::new(ui)
+                .size(Size::remainder())
+                .size(Size::remainder())
+                .horizontal(|mut strip| {
+                    strip.cell(|ui| {
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(
+                                egui::RichText::new("🌍 VPN")
+                                    .text_style(egui::TextStyle::Name("subheading".into())),
+                            );
+                            ui.separator();
+                            self.show_vpn_frame(ui);
+                            ui.allocate_space(ui.available_size());
+                        });
+                    });
+
+                    strip.cell(|ui| {
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(
+                                egui::RichText::new("🚀 Tunnel")
+                                    .text_style(egui::TextStyle::Name("subheading".into())),
+                            );
+                            ui.separator();
+                            self.show_tunnel_frame(ui, tunnel_state.clone());
+                            ui.allocate_space(ui.available_size());
+                        });
+                    });
+                });
+        });
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("📃 Tunnel Log")
+                    .text_style(egui::TextStyle::Name("subheading".into())),
+            );
+            ui.separator();
+            show_ansi_log(ui, &tunnel_state.log, 10.0 * self.config.font_zoom);
+        });
+    }
+
+    fn show_keys_page(&mut self, ui: &mut egui::Ui) {
+        ui.heading("🔑 Keys");
         ui.separator();
         ui.add_space(8.0);
 
-        ui.menu_button("Add config", |ui| {
+        ui.menu_button("Add Key", |ui| {
             if ui.button("From file").clicked() {
                 let path = FileDialog::new()
                     .set_title("Select your Wireguard config")
@@ -281,9 +396,9 @@ impl MyApp {
                     match parse_wg_config(path) {
                         Ok(key) => {
                             if !key.is_empty() {
-                                self.config.keys.push(Keys::new(key));
+                                self.config.keys.push(Key::new(key));
                                 self.dialog_box = Some(GenericDialogBox::info(
-                                    "Config added",
+                                    "Key added",
                                     "The Wireguard key was imported successfully.",
                                     "OK",
                                 ));
@@ -293,7 +408,7 @@ impl MyApp {
                         }
                         Err(err) => {
                             self.dialog_box = Some(GenericDialogBox::info(
-                                "Invalid config",
+                                "Invalid config file",
                                 format!("{err}"),
                                 "Close",
                             ));
@@ -349,7 +464,7 @@ impl MyApp {
                             if ui.button("Show Key").clicked() {
                                 self.dialog_box = Some(GenericDialogBox::info(
                                     "Wireguard Key",
-                                    format!("{}", key.key),
+                                    format!("{}", key.priv_key),
                                     "Close",
                                 ));
                             }
@@ -406,6 +521,40 @@ impl MyApp {
             if ui.selectable_label(!is_dark, "☀ Light").clicked() {
                 ui.set_visuals(egui::Visuals::light());
                 self.config.dark_mode = false;
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("UI Zoom: ");
+
+            if ui.button("➖").clicked() {
+                self.config.ui_zoom -= 0.05;
+                self.config.ui_zoom = self.config.ui_zoom.clamp(0.5, 3.0);
+            }
+            ui.label(format!("{:.2}x", self.config.ui_zoom));
+            if ui.button("➕").clicked() {
+                self.config.ui_zoom += 0.05;
+                self.config.ui_zoom = self.config.ui_zoom.clamp(0.5, 3.0);
+            }
+            if ui.button("🔄").clicked() {
+                self.config.ui_zoom = 1.25;
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Font Zoom: ");
+
+            if ui.button("➖").clicked() {
+                self.config.font_zoom -= 0.025;
+                self.config.font_zoom = self.config.font_zoom.clamp(0.7, 1.3);
+            }
+            ui.label(format!("{:.2}x", self.config.font_zoom));
+            if ui.button("➕").clicked() {
+                self.config.font_zoom += 0.025;
+                self.config.font_zoom = self.config.font_zoom.clamp(0.7, 1.3);
+            }
+            if ui.button("🔄").clicked() {
+                self.config.font_zoom = 1.05;
             }
         });
     }
@@ -498,7 +647,7 @@ impl MyApp {
                     if is_valid_key && (clicked || enter) {
                         let final_input = self.wgkey_dialog_input.trim().to_owned();
                         if !final_input.is_empty() {
-                            self.config.keys.push(Keys::new(final_input));
+                            self.config.keys.push(Key::new(final_input));
                         }
                         self.wgkey_dialog_show = false;
                         self.wgkey_dialog_input.clear();
@@ -512,8 +661,7 @@ impl MyApp {
 #[derive(PartialEq, Clone)]
 enum Page {
     Home,
-    Tunnel,
-    Configs,
+    Keys,
     Pathfinder,
     Settings,
     About,
@@ -575,6 +723,13 @@ impl eframe::App for MyApp {
 
         let config_before_frame = self.config.clone();
         let previous_page = self.current_page.clone();
+        self.handle_zoom_shortcut(ui);
+        update_zoom(
+            self.config.ui_zoom,
+            self.config.font_zoom,
+            self.base_style.clone(),
+            ui.ctx(),
+        ); // TODO: Look into optimizing this. Performance ovedhead is minimal but the implementation is far from neat.
 
         egui::Panel::left("sidebar")
             .resizable(false)
@@ -589,8 +744,7 @@ impl eframe::App for MyApp {
 
                 let items = [
                     (Page::Home, "🏠 Home"),
-                    (Page::Tunnel, "🚀 Tunnel"),
-                    (Page::Configs, "📁 Configs"),
+                    (Page::Keys, "🔑 Keys"),
                     (Page::Pathfinder, "🧭 Pathfinder"),
                     (Page::Settings, "⚙ Settings"),
                     (Page::About, "ℹ About"),
@@ -598,7 +752,8 @@ impl eframe::App for MyApp {
 
                 ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
                     for (page, label) in items {
-                        let text = egui::RichText::new(label).size(14.0);
+                        let text = egui::RichText::new(label)
+                            .text_style(egui::TextStyle::Name("subheading".into()));
 
                         if ui
                             .add_sized(
@@ -613,14 +768,15 @@ impl eframe::App for MyApp {
                 });
             });
 
-        if self.current_page == Page::Configs && previous_page != Page::Configs {
+        if matches!(self.current_page, Page::Keys | Page::Home)
+            && self.current_page != previous_page
+        {
             self.refresh_keys_data();
         }
 
         egui::CentralPanel::default().show(ui, |ui| match &self.current_page {
             Page::Home => self.show_home_page(ui),
-            Page::Tunnel => self.show_tunnel_page(ui),
-            Page::Configs => self.show_config_page(ui),
+            Page::Keys => self.show_keys_page(ui),
             Page::Pathfinder => self.show_pathfinder_page(ui),
             Page::Settings => self.show_settings_page(ui),
             Page::About => self.show_about_page(ui),
@@ -709,7 +865,7 @@ fn main() -> eframe::Result {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 600.0])
+            .with_resizable(true)
             .with_title("mbtunnel"),
         ..Default::default()
     };

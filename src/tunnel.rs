@@ -1,19 +1,13 @@
-#![allow(unused)]
-use flate2::{Compression, write::GzEncoder};
-use getrandom::Error;
 use owo_colors::OwoColorize;
 use reqwest::Version;
 use std::{
-    env::args,
-    io::{Read, Result},
+    io::Read,
     net::{IpAddr, Ipv4Addr},
-    path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
-use tokio::runtime::Runtime;
 
 use crate::{
     app_config::TunnelMode,
@@ -24,7 +18,6 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TunnelStatus {
-    Starting,
     DetectingMode,
     DetectingPort,
     Running,
@@ -65,7 +58,6 @@ impl Tunnel {
 
 enum LogType {
     Info,
-    Warn,
     Error,
 }
 
@@ -78,7 +70,6 @@ fn append_log(log: &mut Vec<u8>, log_type: LogType, msg: String) {
 
     let type_message = match log_type {
         LogType::Info => "INFO".green().to_string(),
-        LogType::Warn => "WARN".yellow().to_string(),
         LogType::Error => "ERROR".red().to_string(),
     };
 

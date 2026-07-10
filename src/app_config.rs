@@ -7,22 +7,20 @@ use xxhash_rust::xxh3::xxh3_64;
 use zstd::bulk::{compress, decompress};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-pub struct Keys {
+pub struct Key {
     pub id: Option<String>,
     pub ip: Option<String>,
-    pub key: String,
-    pub key_type: Option<String>,
+    pub priv_key: String,
     pub is_active: Option<bool>,
     pub expiry: Option<NaiveDate>,
 }
 
-impl Keys {
-    pub fn new(key: String) -> Self {
+impl Key {
+    pub fn new(priv_key: String) -> Self {
         Self {
             id: None,
             ip: None,
-            key: key.to_string(),
-            key_type: None,
+            priv_key: priv_key.to_string(),
             is_active: None,
             expiry: None,
         }
@@ -69,12 +67,24 @@ pub enum TunnelMode {
     UDP,
 }
 
+impl TunnelMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            TunnelMode::Auto => "Auto",
+            TunnelMode::TCP => "TCP",
+            TunnelMode::UDP => "UDP",
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
-    pub keys: Vec<Keys>,
+    pub keys: Vec<Key>,
     pub dark_mode: bool,
     pub tunnel_mode: TunnelMode,
+    pub ui_zoom: f32,
+    pub font_zoom: f32,
 }
 
 impl Default for AppConfig {
@@ -83,6 +93,8 @@ impl Default for AppConfig {
             keys: Vec::new(),
             dark_mode: true,
             tunnel_mode: TunnelMode::Auto,
+            ui_zoom: 1.25,
+            font_zoom: 1.05,
         }
     }
 }

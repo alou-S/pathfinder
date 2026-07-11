@@ -1,8 +1,11 @@
+use defguard_wireguard_rs::{
+    InterfaceConfiguration, WGApi, WireguardInterfaceApi, key::Key, net::IpAddrMask, peer::Peer,
+};
 use owo_colors::OwoColorize;
 use reqwest::Version;
 use std::{
     io::Read,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
@@ -55,7 +58,45 @@ impl Tunnel {
         }
     }
 }
+pub struct Wireguard {
+    pub wgapi: Option<WGApi>,
+    pub wgconfig: Option<WgConfig>,
+    pub selected_key: Option<String>,
+    pub waiting_for_tunnel: bool,
+}
 
+impl Wireguard {
+    pub fn new() -> Self {
+        Wireguard {
+            wgapi: None,
+            wgconfig: None,
+            selected_key: None,
+            waiting_for_tunnel: false,
+        }
+    }
+}
+
+pub struct WgConfig {
+    pub private_key: String,
+    pub ipv4_address: Vec<IpAddrMask>,
+    pub server_public_key: String,
+    pub endpoint_port: u16,
+    pub allowed_ips: Vec<IpAddrMask>,
+    pub mtu: Option<u32>,
+}
+
+impl WgConfig {
+    pub fn new() -> Self {
+        WgConfig {
+            private_key: String::new(),
+            ipv4_address: Vec::new(),
+            server_public_key: String::new(),
+            endpoint_port: 0,
+            allowed_ips: Vec::new(),
+            mtu: None,
+        }
+    }
+}
 enum LogType {
     Info,
     Error,
@@ -373,6 +414,61 @@ pub fn stop_tunnel(tunnel: &Tunnel) {
     }
 }
 
-pub fn start_wireguard() {}
+pub fn start_wireguard(wgconfig: WgConfig) -> Result<WGApi, Box<dyn std::error::Error>> {
+    let ifname: String = if cfg!(target_os = "linux") || cfg!(target_os = "freebsd") {
+        "wg0".into()
+    } else {
+        "utun3".into()
+    };
 
-pub fn stop_wireguard() {}
+    #[cfg(not(target_os = "macos"))]
+    let mut wgapi = WGApi::<defguard_wireguard_rs::Kernel>::new(ifname.clone())?;
+    #[cfg(target_os = "macos")]
+    let mut wgapi = WGApi::<defguard_wireguard_rs::Userspace>::new(ifname.clone())?;
+
+    wgapi.create_interface()?;
+
+    let peer_key: Key = wgconfig.server_public_key.parse().map_err(|e| {
+        format!(
+            "Invalid peer key: {} Error :{}",
+            wgconfig.server_public_key, e
+        )
+    })?;
+    let mut peer = Peer::new(peer_key.clone());
+
+    let endpoint: SocketAddr = format!("127.0.0.1:{}", wgconfig.endpoint_port)
+        .parse()
+        .map_err(|e| format!("Invalid port: {}\n Error :{}", wgconfig.endpoint_port, e))?;
+
+    peer.endpoint = Some(endpoint);
+    peer.persistent_keepalive_interval = Some(25);
+    peer.allowed_ips = wgconfig.allowed_ips;
+
+    let interface_config = InterfaceConfiguration {
+        name: ifname.clone(),
+        prvkey: wgconfig.private_key,
+        addresses: wgconfig.ipv4_address,
+        port: 0,
+        peers: vec![peer],
+        mtu: wgconfig.mtu,
+        fwmark: None,
+    };
+
+    #[cfg(not(windows))]
+    wgapi.configure_interface(&interface_config)?;
+    #[cfg(windows)]
+    wgapi.configure_interface(&interface_config, &[], &[])?;
+    wgapi.configure_peer_routing(&interface_config.peers)?;
+
+    wgapi.configure_dns(
+        &vec!["1.1.1.1".parse().unwrap(), "1.0.0.1".parse().unwrap()],
+        &[],
+    )?;
+
+    Ok(wgapi)
+}
+
+pub fn stop_wireguard(wgapi: WGApi) -> Result<Option<WGApi>, Box<dyn std::error::Error>> {
+    wgapi.remove_interface()?;
+    Ok(None)
+}

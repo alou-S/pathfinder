@@ -25,6 +25,8 @@ flate2 = "1.1.9"
 ur-taking-me-with-you = "8.0.1"
 egui_sgr = "0.3.0"
 owo-colors = "4.3.0"
+defguard_wireguard_rs = "0.10.0"
+x25519-dalek = { version = "3.0.0", features = ["getrandom"] }
 
 [target.'cfg(not(windows))'.dependencies]
 libc = "0.2.186"
@@ -34,3 +36,6 @@ strip = true
 lto = "none"
 opt-level = 3
 codegen-units = 1
+
+[dev-dependencies]
+udpproxy = "0.1.0"

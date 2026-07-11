@@ -18,9 +18,9 @@ mod update_dialog;
 mod utils_nix;
 #[cfg(target_os = "windows")]
 mod utils_win;
-use crate::tunnel::{Tunnel, TunnelState, TunnelStatus};
+use crate::tunnel::{Tunnel, TunnelState, TunnelStatus, WgConfig, Wireguard};
 use app_config::{AppConfig, Key, TunnelMode, load_config, save_config};
-use fetch::fetch_keys_data;
+use fetch::{fetch_config_data, fetch_keys_data};
 use generic_dialog_box::{DialogAction, DialogReply, GenericDialogBox};
 use update_dialog::UpdateDialog;
 
@@ -77,6 +77,7 @@ struct MyApp {
     dir_creation_error: Option<String>,
     tunnel: Tunnel,
     base_style: egui::Style,
+    wireguard: Wireguard,
 }
 
 fn show_ansi_log(ui: &mut egui::Ui, log: &[u8], font: f32) {
@@ -185,6 +186,7 @@ impl MyApp {
             dir_creation_error,
             tunnel: Tunnel::default(),
             base_style,
+            wireguard: Wireguard::new(),
         }
     }
 
@@ -229,7 +231,7 @@ impl MyApp {
             }
 
             if input.key_pressed(egui::Key::Num0) {
-                self.config.ui_zoom = 1.25;
+                self.config.ui_zoom = 1.3;
             }
         }
 
@@ -263,9 +265,159 @@ impl MyApp {
                 ));
             }
         }
+
+        self.wireguard.selected_key = self.config.keys.get(0).and_then(|k| k.id.clone());
     }
 
-    fn show_vpn_frame(&mut self, ui: &mut egui::Ui) {}
+    fn show_vpn_frame(&mut self, ui: &mut egui::Ui) {
+        if self.wireguard.wgapi.is_none() && !self.wireguard.waiting_for_tunnel {
+            ui.label("VPN State: Not Running");
+            ui.horizontal(|ui| {
+                ui.label("VPN Key:");
+                egui::ComboBox::from_id_salt("key_select")
+                    .selected_text(
+                        self.wireguard
+                            .selected_key
+                            .as_deref()
+                            .unwrap_or("Select a key"),
+                    )
+                    .show_ui(ui, |ui| {
+                        for key in &self.config.keys {
+                            if let Some(id) = &key.id {
+                                let enabled = id != "Invalid Key";
+                                ui.add_enabled_ui(enabled, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.wireguard.selected_key,
+                                        Some(id.clone()),
+                                        id,
+                                    );
+                                });
+                            }
+                        }
+
+                        ui.separator();
+
+                        if ui.selectable_label(false, "➕ Add key").clicked() {
+                            self.current_page = Page::Keys;
+                        }
+                    });
+
+                if ui.button("🔄").clicked() {
+                    self.refresh_keys_data();
+                }
+            });
+        } else {
+            if self.wireguard.waiting_for_tunnel {
+                ui.label("VPN State: Waiting for Tunnel");
+            } else {
+                ui.label("VPN State: Running");
+            }
+
+            ui.label(format!(
+                "VPN Key: {}",
+                self.wireguard.selected_key.as_deref().unwrap()
+            ));
+        }
+
+        ui.add_space(8.0);
+        if (self.wireguard.wgapi.is_none() && !self.wireguard.waiting_for_tunnel)
+            && ui.button("Start VPN").clicked()
+        {
+            if self.wireguard.selected_key.is_none() {
+                self.dialog_box = Some(GenericDialogBox::info(
+                    "Error",
+                    "Please select a key before starting VPN.",
+                    "Close",
+                ));
+                return;
+            }
+
+            let key = self
+                .config
+                .keys
+                .iter()
+                .find(|k| k.id.clone().unwrap() == self.wireguard.selected_key.clone().unwrap())
+                .unwrap();
+
+            let mut wgconfig = WgConfig::new();
+
+            wgconfig.ipv4_address = vec![key.ip.clone().unwrap().parse().unwrap()];
+            wgconfig.private_key = key.priv_key.clone();
+
+            (
+                wgconfig.server_public_key,
+                wgconfig.allowed_ips,
+                wgconfig.mtu,
+            ) = match fetch_config_data(wgconfig.private_key.clone()) {
+                Ok(config) => config,
+                Err(e) => {
+                    self.dialog_box = Some(GenericDialogBox::info(
+                        "Error",
+                        format!("Failed to fetch Wireguard config: {:#?}", e),
+                        "Close",
+                    ));
+                    return;
+                }
+            };
+
+            let tunnel_status = self.tunnel.state.lock().unwrap().status.clone();
+
+            if tunnel_status == TunnelStatus::Running {
+                wgconfig.endpoint_port = self.tunnel.state.lock().unwrap().port.unwrap();
+                match crate::tunnel::start_wireguard(wgconfig) {
+                    Ok(wgapi) => {
+                        self.wireguard.wgapi = Some(wgapi);
+                    }
+                    Err(e) => {
+                        self.dialog_box = Some(GenericDialogBox::info(
+                            "Error",
+                            format!("Failed to start Wireguard: {:#?}", e),
+                            "Close",
+                        ));
+                    }
+                }
+                return;
+            }
+
+            if tunnel_status == TunnelStatus::Stopped {
+                crate::tunnel::start_tunnel(self.config.tunnel_mode, &self.tunnel);
+            }
+
+            self.wireguard.wgconfig = Some(wgconfig);
+            self.wireguard.waiting_for_tunnel = true;
+        }
+
+        if self.wireguard.waiting_for_tunnel && ui.button("Stop VPN").clicked() {
+            self.wireguard.waiting_for_tunnel = false;
+            crate::tunnel::stop_tunnel(&self.tunnel);
+        }
+
+        if self.wireguard.wgapi.is_some() && ui.button("Stop VPN").clicked() {
+            crate::tunnel::stop_tunnel(&self.tunnel);
+
+            let wireguard = self.wireguard.wgapi.take();
+            if wireguard.is_none() {
+                self.dialog_box = Some(GenericDialogBox::info(
+                    "Error",
+                    "VPN is not running.",
+                    "Close",
+                ));
+            } else {
+                match crate::tunnel::stop_wireguard(wireguard.unwrap()) {
+                    Ok(_) => {
+                        self.wireguard.wgapi = None;
+                    }
+                    Err(e) => {
+                        self.dialog_box = Some(GenericDialogBox::info(
+                            "Error",
+                            format!("Failed to stop Wireguard: {:#?}", e),
+                            "Close",
+                        ));
+                    }
+                }
+            }
+        }
+    }
 
     fn show_tunnel_frame(&mut self, ui: &mut egui::Ui, tunnel_state: TunnelState) {
         let state_text = match &tunnel_state.status {
@@ -331,6 +483,10 @@ impl MyApp {
     fn show_home_page(&mut self, ui: &mut egui::Ui) {
         ui.heading("🏠 Home");
         ui.separator();
+
+        if self.wireguard.selected_key.is_none() {
+            self.wireguard.selected_key = self.config.keys.get(0).and_then(|k| k.id.clone());
+        }
 
         let tunnel_state = {
             let guard = self.tunnel.state.lock().unwrap();
@@ -426,8 +582,8 @@ impl MyApp {
 
         TableBuilder::new(ui)
             .striped(true)
-            .column(Column::auto())
-            .column(Column::auto())
+            .column(Column::auto().at_least(60.0))
+            .column(Column::auto().at_least(80.0))
             .column(Column::remainder())
             .column(Column::auto().at_least(60.0))
             .column(Column::auto().at_least(40.0))
@@ -475,8 +631,8 @@ impl MyApp {
                                 self.dialog_box = Some(GenericDialogBox::two_buttons(
                                     "Delete config",
                                     format!(
-                                        "Are you sure you want to delete this config?\n {:?}",
-                                        key.id
+                                        "Are you sure you want to delete this config?\n {}",
+                                        key.id.clone().unwrap()
                                     ),
                                     "Cancel",
                                     "Delete",
@@ -537,7 +693,7 @@ impl MyApp {
                 self.config.ui_zoom = self.config.ui_zoom.clamp(0.5, 3.0);
             }
             if ui.button("🔄").clicked() {
-                self.config.ui_zoom = 1.25;
+                self.config.ui_zoom = 1.3;
             }
         });
 
@@ -723,6 +879,7 @@ impl eframe::App for MyApp {
 
         let config_before_frame = self.config.clone();
         let previous_page = self.current_page.clone();
+
         self.handle_zoom_shortcut(ui);
         update_zoom(
             self.config.ui_zoom,
@@ -730,6 +887,30 @@ impl eframe::App for MyApp {
             self.base_style.clone(),
             ui.ctx(),
         ); // TODO: Look into optimizing this. Performance ovedhead is minimal but the implementation is far from neat.
+
+        if self.wireguard.waiting_for_tunnel {
+            let tunnel_state = self.tunnel.state.lock().unwrap();
+
+            if tunnel_state.status == TunnelStatus::Running {
+                let mut wgconfig = self.wireguard.wgconfig.take().unwrap();
+                wgconfig.endpoint_port = tunnel_state.port.unwrap();
+
+                match crate::tunnel::start_wireguard(wgconfig) {
+                    Ok(wgapi) => {
+                        self.wireguard.wgapi = Some(wgapi);
+                    }
+                    Err(e) => {
+                        self.dialog_box = Some(GenericDialogBox::info(
+                            "Error",
+                            format!("Failed to start Wireguard: {:#?}", e),
+                            "Close",
+                        ));
+                        crate::tunnel::stop_tunnel(&self.tunnel);
+                    }
+                }
+                self.wireguard.waiting_for_tunnel = false;
+            }
+        }
 
         egui::Panel::left("sidebar")
             .resizable(false)

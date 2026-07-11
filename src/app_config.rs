@@ -93,7 +93,7 @@ impl Default for AppConfig {
             keys: Vec::new(),
             dark_mode: true,
             tunnel_mode: TunnelMode::Auto,
-            ui_zoom: 1.25,
+            ui_zoom: 1.3,
             font_zoom: 1.05,
         }
     }

@@ -27,6 +27,7 @@ egui_sgr = "0.3.0"
 owo-colors = "4.3.0"
 defguard_wireguard_rs = "0.10.0"
 x25519-dalek = { version = "3.0.0", features = ["getrandom"] }
+egui_commonmark = "0.23.0"
 
 [target.'cfg(not(windows))'.dependencies]
 libc = "0.2.186"

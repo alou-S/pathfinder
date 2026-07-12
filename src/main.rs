@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use eframe::egui::{self, UiKind};
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_extras::{Column, Size, StripBuilder, TableBuilder};
 use regex::Regex;
 use rfd::FileDialog;
@@ -28,6 +29,7 @@ static WG_KEY_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 static APPDATA_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 const APP_WINDOW_SIZE: (f32, f32) = (640.0, 508.0);
+const LICENSES_MD: &str = include_str!("licenses.md");
 
 pub fn appdata_path() -> &'static PathBuf {
     APPDATA_PATH.get_or_init(|| {
@@ -78,6 +80,8 @@ struct MyApp {
     tunnel: Tunnel,
     base_style: egui::Style,
     wireguard: Wireguard,
+    md_cache: CommonMarkCache,
+    show_licenses: bool,
 }
 
 fn show_ansi_log(ui: &mut egui::Ui, log: &[u8], font: f32) {
@@ -187,6 +191,8 @@ impl MyApp {
             tunnel: Tunnel::default(),
             base_style,
             wireguard: Wireguard::new(),
+            md_cache: CommonMarkCache::default(),
+            show_licenses: false,
         }
     }
 
@@ -718,13 +724,38 @@ impl MyApp {
     fn show_about_page(&mut self, ui: &mut egui::Ui) {
         ui.heading("ℹ About");
         ui.separator();
-        ui.add_space(8.0);
-        ui.label("This app was built with:");
-        ui.label("• Rust 🦀");
-        ui.label("• egui 0.34");
-        ui.label("• eframe 0.34");
-        ui.add_space(12.0);
-        ui.hyperlink_to("egui on GitHub", "https://github.com/emilk/egui");
+
+        if self.show_licenses {
+            egui::ScrollArea::vertical()
+                .max_height(ui.available_height() - 40.0)
+                .show(ui, |ui| {
+                    let old_style = ui.style().clone();
+
+                    let mut style = (*old_style).clone();
+                    for font_id in style.text_styles.values_mut() {
+                        font_id.size *= 0.8;
+                    }
+
+                    ui.set_style(style);
+                    CommonMarkViewer::new().show(ui, &mut self.md_cache, LICENSES_MD);
+                    ui.set_style(old_style);
+                });
+
+            ui.separator();
+            if ui.button("Close").clicked() {
+                self.show_licenses = false;
+            }
+        } else {
+            ui.add_space(8.0);
+            ui.label("This app was built with ❤ in Rust");
+            ui.label("Using the eframe/egui GUI framework");
+            ui.hyperlink_to("egui on GitHub", "https://github.com/emilk/egui");
+            ui.add_space(8.0);
+
+            if ui.button("View Licenses").clicked() {
+                self.show_licenses = true
+            }
+        }
     }
 
     fn show_wgkey_dialog(&mut self, ui: &mut egui::Ui) {

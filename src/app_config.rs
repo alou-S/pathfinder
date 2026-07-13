@@ -13,6 +13,8 @@ pub struct Key {
     pub priv_key: String,
     pub is_active: Option<bool>,
     pub expiry: Option<NaiveDate>,
+    pub rx_bytes: Option<u64>,
+    pub tx_bytes: Option<u64>,
 }
 
 impl Key {
@@ -23,6 +25,8 @@ impl Key {
             priv_key: priv_key.to_string(),
             is_active: None,
             expiry: None,
+            rx_bytes: None,
+            tx_bytes: None,
         }
     }
 
@@ -41,19 +45,18 @@ impl Key {
                 let today = Local::now().date_naive();
                 let diff = date.signed_duration_since(today);
                 let days = diff.num_days();
-                let date_formatted = date.format("%b %e, %Y");
 
                 if days == 0 {
                     let mins = diff.num_minutes().unsigned_abs();
                     if diff.num_minutes() >= 0 {
-                        format!("{mins} minutes left ({date_formatted})")
+                        format!("{mins} minutes left")
                     } else {
-                        format!("{mins} minutes ago ({date_formatted})")
+                        format!("{mins} minutes ago")
                     }
                 } else if days > 0 {
-                    format!("{days} days left ({date_formatted})")
+                    format!("{days} days left")
                 } else {
-                    format!("{} days ago ({date_formatted})", days.unsigned_abs())
+                    format!("{} days ago", days.unsigned_abs())
                 }
             }
         }

@@ -128,6 +128,22 @@ fn update_zoom(ui_zoom: f32, font_zoom: f32, mut style: egui::Style, ctx: &egui:
     ctx.set_global_style(style);
 }
 
+fn humanize_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
 impl MyApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut dir_creation_error = None;
@@ -264,10 +280,15 @@ impl MyApp {
                 self.config.keys = keys;
             }
             Err(e) => {
-                self.dialog_box = Some(GenericDialogBox::info(
+                let message = format!("Failed to fetch keys data: {:#?}", e);
+                self.dialog_box = Some(GenericDialogBox::new(
                     "Error",
-                    format!("Failed to fetch keys data: {:#?}", e),
+                    move |ui| {
+                        ui.label(message.as_str());
+                    },
                     "Close",
+                    None::<String>,
+                    DialogAction::None,
                 ));
             }
         }
@@ -330,10 +351,14 @@ impl MyApp {
             && ui.button("Start VPN").clicked()
         {
             if self.wireguard.selected_key.is_none() {
-                self.dialog_box = Some(GenericDialogBox::info(
+                self.dialog_box = Some(GenericDialogBox::new(
                     "Error",
-                    "Please select a key before starting VPN.",
+                    |ui| {
+                        ui.label("Please select a key before starting VPN.");
+                    },
                     "Close",
+                    None::<String>,
+                    DialogAction::None,
                 ));
                 return;
             }
@@ -357,10 +382,15 @@ impl MyApp {
             ) = match fetch_config_data(wgconfig.private_key.clone()) {
                 Ok(config) => config,
                 Err(e) => {
-                    self.dialog_box = Some(GenericDialogBox::info(
+                    let message = format!("Failed to fetch Wireguard config: {:#?}", e);
+                    self.dialog_box = Some(GenericDialogBox::new(
                         "Error",
-                        format!("Failed to fetch Wireguard config: {:#?}", e),
+                        move |ui| {
+                            ui.label(message.as_str());
+                        },
                         "Close",
+                        None::<String>,
+                        DialogAction::None,
                     ));
                     return;
                 }
@@ -375,10 +405,15 @@ impl MyApp {
                         self.wireguard.wgapi = Some(wgapi);
                     }
                     Err(e) => {
-                        self.dialog_box = Some(GenericDialogBox::info(
+                        let message = format!("Failed to start Wireguard: {:#?}", e);
+                        self.dialog_box = Some(GenericDialogBox::new(
                             "Error",
-                            format!("Failed to start Wireguard: {:#?}", e),
+                            move |ui| {
+                                ui.label(message.as_str());
+                            },
                             "Close",
+                            None::<String>,
+                            DialogAction::None,
                         ));
                     }
                 }
@@ -403,10 +438,14 @@ impl MyApp {
 
             let wireguard = self.wireguard.wgapi.take();
             if wireguard.is_none() {
-                self.dialog_box = Some(GenericDialogBox::info(
+                self.dialog_box = Some(GenericDialogBox::new(
                     "Error",
-                    "VPN is not running.",
+                    |ui| {
+                        ui.label("VPN is not running.");
+                    },
                     "Close",
+                    None::<String>,
+                    DialogAction::None,
                 ));
             } else {
                 match crate::tunnel::stop_wireguard(wireguard.unwrap()) {
@@ -414,10 +453,15 @@ impl MyApp {
                         self.wireguard.wgapi = None;
                     }
                     Err(e) => {
-                        self.dialog_box = Some(GenericDialogBox::info(
+                        let message = format!("Failed to stop Wireguard: {:#?}", e);
+                        self.dialog_box = Some(GenericDialogBox::new(
                             "Error",
-                            format!("Failed to stop Wireguard: {:#?}", e),
+                            move |ui| {
+                                ui.label(message.as_str());
+                            },
                             "Close",
+                            None::<String>,
+                            DialogAction::None,
                         ));
                     }
                 }
@@ -541,56 +585,72 @@ impl MyApp {
         });
     }
 
-    fn show_keys_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("🔑 Keys");
-        ui.separator();
-        ui.add_space(8.0);
+    fn show_key_info_dialog(&mut self, key: Key) {
+        let rx_bytes = match key.rx_bytes {
+            Some(bytes) => humanize_bytes(bytes),
+            None => "0".to_string(),
+        };
 
-        ui.menu_button("Add Key", |ui| {
-            if ui.button("From file").clicked() {
-                let path = FileDialog::new()
-                    .set_title("Select your Wireguard config")
-                    .add_filter("Config", &["conf"])
-                    .add_filter("All Files", &["*"])
-                    .pick_file();
+        let tx_bytes = match key.tx_bytes {
+            Some(bytes) => humanize_bytes(bytes),
+            None => "0".to_string(),
+        };
 
-                if let Some(path) = path {
-                    match parse_wg_config(path) {
-                        Ok(key) => {
-                            if !key.is_empty() {
-                                self.config.keys.push(Key::new(key));
-                                self.dialog_box = Some(GenericDialogBox::info(
-                                    "Key added",
-                                    "The Wireguard key was imported successfully.",
-                                    "OK",
-                                ));
-                            }
+        let end_date = match key.expiry {
+            Some(date) => date.to_string(),
+            None => "".to_string(),
+        };
 
-                            self.refresh_keys_data();
-                        }
-                        Err(err) => {
-                            self.dialog_box = Some(GenericDialogBox::info(
-                                "Invalid config file",
-                                format!("{err}"),
-                                "Close",
-                            ));
-                        }
-                    }
-                }
-            }
+        let key_name = key.id.clone().unwrap_or_default();
+        let subscription = key.get_subscription();
+        let ip_address = key.ip.clone().unwrap_or_default();
 
-            if ui.button("Using Key").clicked() {
-                self.wgkey_dialog_show = true;
-                self.wgkey_dialog_input.clear();
-                ui.close_kind(UiKind::Menu);
-            }
-        });
+        self.dialog_box = Some(GenericDialogBox::new(
+            "Key Info",
+            move |ui| {
+                egui::Grid::new("key_info_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("Key Name");
+                        ui.label(key_name.as_str());
+                        ui.end_row();
 
+                        ui.label("Subscription");
+                        ui.label(subscription.as_str());
+                        ui.end_row();
+
+                        ui.label("End Date");
+                        ui.label(end_date.as_str());
+                        ui.end_row();
+
+                        ui.label("IP Address");
+                        ui.label(ip_address.as_str());
+                        ui.end_row();
+
+                        ui.label("Download Usage");
+                        ui.label(rx_bytes.as_str());
+                        ui.end_row();
+
+                        ui.label("Upload Usage");
+                        ui.label(tx_bytes.as_str());
+                        ui.end_row();
+                    });
+            },
+            "Close",
+            None::<String>,
+            DialogAction::None,
+        ));
+    }
+
+    fn show_key_table_frame(&mut self, ui: &mut egui::Ui) {
         TableBuilder::new(ui)
             .striped(true)
             .column(Column::auto().at_least(60.0))
             .column(Column::auto().at_least(80.0))
             .column(Column::remainder())
+            .column(Column::auto().at_least(60.0))
             .column(Column::auto().at_least(60.0))
             .column(Column::auto().at_least(40.0))
             .header(20.0, |mut header| {
@@ -607,11 +667,16 @@ impl MyApp {
                     ui.label("        ");
                 });
                 header.col(|ui| {
+                    ui.label("        ");
+                });
+                header.col(|ui| {
                     ui.label("      ");
                 });
             })
             .body(|mut body| {
-                for (index, key) in self.config.keys.iter().enumerate() {
+                let keys = self.config.keys.clone().into_iter().enumerate();
+
+                for (index, key) in keys {
                     body.row(20.0, |mut row| {
                         row.col(|ui| {
                             ui.label(format!("{}", Opt(key.id.as_deref())));
@@ -623,25 +688,38 @@ impl MyApp {
                             ui.label(format!("{}", key.get_expiry()));
                         });
                         row.col(|ui| {
+                            if ui.button("Show Info").clicked() {
+                                self.show_key_info_dialog(key.clone());
+                            }
+                        });
+                        row.col(|ui| {
                             if ui.button("Show Key").clicked() {
-                                self.dialog_box = Some(GenericDialogBox::info(
+                                let private_key = format!("{}", key.priv_key);
+                                self.dialog_box = Some(GenericDialogBox::new(
                                     "Wireguard Key",
-                                    format!("{}", key.priv_key),
+                                    move |ui| {
+                                        ui.label(private_key.as_str());
+                                    },
                                     "Close",
+                                    None::<String>,
+                                    DialogAction::None,
                                 ));
                             }
                         });
                         row.col(|ui| {
                             if ui.button("Delete").clicked() {
                                 self.pending_delete_key_index = Some(index);
-                                self.dialog_box = Some(GenericDialogBox::two_buttons(
+                                let message = format!(
+                                    "Are you sure you want to delete this config?\n {}",
+                                    key.id.as_deref().unwrap()
+                                );
+                                self.dialog_box = Some(GenericDialogBox::new(
                                     "Delete config",
-                                    format!(
-                                        "Are you sure you want to delete this config?\n {}",
-                                        key.id.clone().unwrap()
-                                    ),
+                                    move |ui| {
+                                        ui.label(message.as_str());
+                                    },
                                     "Cancel",
-                                    "Delete",
+                                    Some("Delete"),
                                     DialogAction::ClearSpecificKey,
                                 ));
                             }
@@ -649,17 +727,99 @@ impl MyApp {
                     });
                 }
             });
+    }
 
-        ui.add_space(12.0);
-        if ui.button("Clear all saved keys").clicked() {
-            self.dialog_box = Some(GenericDialogBox::two_buttons(
-                "Clear saved keys",
-                "This will remove all saved keys from your settings.",
-                "Cancel",
-                "Clear",
-                DialogAction::ClearAllKeys,
-            ));
-        }
+    fn show_keys_page(&mut self, ui: &mut egui::Ui) {
+        ui.heading("🔑 Keys");
+        ui.separator();
+        ui.add_space(8.0);
+
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("📋 Key Table")
+                        .text_style(egui::TextStyle::Name("subheading".into())),
+                );
+                ui.add_space(ui.available_width() - 40.0);
+                if ui
+                    .button(
+                        egui::RichText::new("🔄")
+                            .text_style(egui::TextStyle::Name("subheading".into())),
+                    )
+                    .clicked()
+                {
+                    self.refresh_keys_data();
+                }
+            });
+            ui.separator();
+            self.show_key_table_frame(ui);
+        });
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.menu_button("➕ Add Key", |ui| {
+                if ui.button("From file").clicked() {
+                    let path = FileDialog::new()
+                        .set_title("Select your Wireguard config")
+                        .add_filter("Config", &["conf"])
+                        .add_filter("All Files", &["*"])
+                        .pick_file();
+
+                    if let Some(path) = path {
+                        match parse_wg_config(path) {
+                            Ok(key) => {
+                                if !key.is_empty() {
+                                    self.config.keys.push(Key::new(key));
+                                    self.dialog_box = Some(GenericDialogBox::new(
+                                        "Key added",
+                                        |ui| {
+                                            ui.label(
+                                                "The Wireguard key was imported successfully.",
+                                            );
+                                        },
+                                        "OK",
+                                        None::<String>,
+                                        DialogAction::None,
+                                    ));
+                                }
+
+                                self.refresh_keys_data();
+                            }
+                            Err(err) => {
+                                let message = format!("{err}");
+                                self.dialog_box = Some(GenericDialogBox::new(
+                                    "Invalid config file",
+                                    move |ui| {
+                                        ui.label(message.as_str());
+                                    },
+                                    "Close",
+                                    None::<String>,
+                                    DialogAction::None,
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                if ui.button("Using Key").clicked() {
+                    self.wgkey_dialog_show = true;
+                    self.wgkey_dialog_input.clear();
+                    ui.close_kind(UiKind::Menu);
+                }
+            });
+            ui.add_space(ui.available_width() - 104.0);
+            if ui.button("🗑 Clear all keys").clicked() {
+                self.dialog_box = Some(GenericDialogBox::new(
+                    "Clear saved keys",
+                    |ui| {
+                        ui.label("This will remove all saved keys from your settings.");
+                    },
+                    "Cancel",
+                    Some("Clear"),
+                    DialogAction::ClearAllKeys,
+                ));
+            }
+        });
     }
 
     fn show_pathfinder_page(&mut self, ui: &mut egui::Ui) {
@@ -878,13 +1038,16 @@ impl eframe::App for MyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if let Some(err) = &self.dir_creation_error {
             if self.dialog_box.is_none() {
-                let mut dialog = GenericDialogBox::info(
+                let message = format!("Failed to create AppData directory:\n{}", err);
+                self.dialog_box = Some(GenericDialogBox::new(
                     "Fatal Error",
-                    format!("Failed to create AppData directory:\n{}", err),
+                    move |ui| {
+                        ui.label(message.as_str());
+                    },
                     "Exit",
-                );
-                dialog.action = DialogAction::Exit;
-                self.dialog_box = Some(dialog);
+                    None::<String>,
+                    DialogAction::Exit,
+                ));
             }
 
             let mut dialog_event = None;
@@ -931,10 +1094,15 @@ impl eframe::App for MyApp {
                         self.wireguard.wgapi = Some(wgapi);
                     }
                     Err(e) => {
-                        self.dialog_box = Some(GenericDialogBox::info(
+                        let message = format!("Failed to start Wireguard: {:#?}", e);
+                        self.dialog_box = Some(GenericDialogBox::new(
                             "Error",
-                            format!("Failed to start Wireguard: {:#?}", e),
+                            move |ui| {
+                                ui.label(message.as_str());
+                            },
                             "Close",
+                            None::<String>,
+                            DialogAction::None,
                         ));
                         crate::tunnel::stop_tunnel(&self.tunnel);
                     }
@@ -1011,21 +1179,29 @@ impl eframe::App for MyApp {
         }
 
         if let Some(err) = self.load_config_error.take() {
-            self.dialog_box = Some(GenericDialogBox::info(
+            let message = format!("Failed to load mbtunnel settings file: {err}");
+            self.dialog_box = Some(GenericDialogBox::new(
                 "Error loading settings",
-                format!("Failed to load mbtunnel settings file: {err}"),
+                move |ui| {
+                    ui.label(message.as_str());
+                },
                 "Continue",
+                None::<String>,
+                DialogAction::None,
             ));
         }
 
         if self.config != config_before_frame {
             if let Err(err) = save_config(&self.config, appdata_path().join("config.dat")) {
                 if !self.ignore_save_error {
-                    self.dialog_box = Some(GenericDialogBox::two_buttons(
+                    let message = format!("Failed to save config: {err}");
+                    self.dialog_box = Some(GenericDialogBox::new(
                         "Error saving config",
-                        format!("Failed to save config: {err}"),
+                        move |ui| {
+                            ui.label(message.as_str());
+                        },
                         "Don't show again",
-                        "Continue",
+                        Some("Continue"),
                         DialogAction::IgnoreSaveError,
                     ));
                 }

@@ -303,11 +303,14 @@ impl UpdateDialog {
                 error_title,
                 error_message,
             } => {
-                self.dialog_box = Some(GenericDialogBox::two_buttons(
+                let message = error_message;
+                self.dialog_box = Some(GenericDialogBox::new(
                     error_title,
-                    error_message,
+                    move |ui| {
+                        ui.label(message.as_str());
+                    },
                     "Continue",
-                    "Retry",
+                    Some("Retry"),
                     DialogAction::RetryUpdate,
                 ));
             }
@@ -315,9 +318,16 @@ impl UpdateDialog {
                 error_title,
                 error_message,
             } => {
-                let mut dialog = GenericDialogBox::info(error_title, error_message, "Continue");
-                dialog.action = DialogAction::RetryUpdate;
-                self.dialog_box = Some(dialog);
+                let message = error_message;
+                self.dialog_box = Some(GenericDialogBox::new(
+                    error_title,
+                    move |ui| {
+                        ui.label(message.as_str());
+                    },
+                    "Continue",
+                    None::<String>,
+                    DialogAction::RetryUpdate,
+                ));
             }
         }
     }

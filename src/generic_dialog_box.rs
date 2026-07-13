@@ -19,7 +19,7 @@ pub enum DialogAction {
 
 pub struct GenericDialogBox {
     dialog_box_title: String,
-    dialog_box_message: String,
+    dialog_box_body: Box<dyn FnMut(&mut egui::Ui)>,
     primary_button: String,
     secondary_button: Option<String>,
     pub action: DialogAction,
@@ -27,33 +27,18 @@ pub struct GenericDialogBox {
 }
 
 impl GenericDialogBox {
-    pub fn info(
+    pub fn new(
         title: impl Into<String>,
-        message: impl Into<String>,
-        button: impl Into<String>,
-    ) -> Self {
-        Self {
-            dialog_box_title: title.into(),
-            dialog_box_message: message.into(),
-            primary_button: button.into(),
-            secondary_button: None,
-            action: DialogAction::None,
-            is_open: true,
-        }
-    }
-
-    pub fn two_buttons(
-        title: impl Into<String>,
-        message: impl Into<String>,
+        body: impl FnMut(&mut egui::Ui) + 'static,
         primary_button: impl Into<String>,
-        secondary_button: impl Into<String>,
+        secondary_button: Option<impl Into<String>>,
         action: DialogAction,
     ) -> Self {
         Self {
             dialog_box_title: title.into(),
-            dialog_box_message: message.into(),
+            dialog_box_body: Box::new(body),
             primary_button: primary_button.into(),
-            secondary_button: Some(secondary_button.into()),
+            secondary_button: secondary_button.map(|button| button.into()),
             action,
             is_open: true,
         }
@@ -73,7 +58,7 @@ impl GenericDialogBox {
             .open(&mut open)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label(self.dialog_box_message.as_str());
+                (self.dialog_box_body)(ui);
                 ui.add_space(10.0);
 
                 ui.horizontal(|ui| {

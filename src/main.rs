@@ -82,6 +82,8 @@ struct MyApp {
     wireguard: Wireguard,
     md_cache: CommonMarkCache,
     show_licenses: bool,
+    privilege_checked: bool,
+    can_run_wireguard: bool,
 }
 
 fn show_ansi_log(ui: &mut egui::Ui, log: &[u8], font: f32) {
@@ -241,6 +243,8 @@ impl MyApp {
             wireguard: Wireguard::new(),
             md_cache: CommonMarkCache::default(),
             show_licenses: false,
+            privilege_checked: false,
+            can_run_wireguard: true,
         }
     }
 
@@ -418,7 +422,21 @@ impl MyApp {
         render_egui_grid(ui, grid_rows, "vpn_frame_grid");
 
         ui.add_space(8.0);
+
+        if !self.can_run_wireguard && ui.button("Start VPN").clicked() {
+            self.dialog_box = Some(GenericDialogBox::new(
+                "Privilege Error",
+                |ui| {
+                    ui.label("App does not have the privileges to start the VPN.");
+                },
+                "Close",
+                None::<String>,
+                DialogAction::None,
+            ));
+        }
+
         if (self.wireguard.wgapi.is_none() && !self.wireguard.waiting_for_tunnel)
+            && self.can_run_wireguard
             && ui.button("Start VPN").clicked()
         {
             if self.wireguard.selected_key.is_none() {
@@ -1125,6 +1143,66 @@ impl MyApp {
                 })
             });
     }
+
+    #[cfg(target_os = "linux")]
+    fn check_privilege(&mut self) {
+        let has_cap = match crate::utils_nix::check_cap_net_admin() {
+            Ok(value) => value,
+            Err(e) => {
+                let message = format!(
+                    "Failed to check CAP_NET_ADMIN: {:#?}\n If this app doesn't have CAP_NET_ADMIN, you will not be able to start the VPN.",
+                    e
+                );
+                self.dialog_box = Some(GenericDialogBox::new(
+                    "Privilege Error",
+                    move |ui| {
+                        ui.label(message.as_str());
+                    },
+                    "Close",
+                    None::<String>,
+                    DialogAction::None,
+                ));
+                self.can_run_wireguard = false;
+                return;
+            }
+        };
+
+        if !has_cap {
+            if !which::which("pkexec").is_ok() {
+                self.dialog_box = Some(GenericDialogBox::new(
+                    "Privilege Error",
+                    |ui| {
+                        ui.label("This app requires polkit (pkexec) to start the VPN. Please install polkit and try again.");
+                    },
+                    "Close",
+                    None::<String>,
+                    DialogAction::None,
+                ));
+                self.can_run_wireguard = false;
+                return;
+            }
+            let path = std::env::current_exe().unwrap();
+            let arg = "--selfcap";
+
+            if let Err(err) = crate::utils_nix::run_with_pkexec(path.clone(), arg) {
+                let message = format!("Failed to grant CAP_NET_ADMIN:\n {:#?}", err);
+                self.dialog_box = Some(GenericDialogBox::new(
+                    "Privilege Error",
+                    move |ui| {
+                        ui.label(message.as_str());
+                    },
+                    "Close",
+                    None::<String>,
+                    DialogAction::None,
+                ));
+                self.can_run_wireguard = false;
+                return;
+            }
+
+            crate::utils_nix::spawn_detached_process(path).unwrap();
+            std::process::exit(0);
+        }
+    }
 }
 
 #[derive(PartialEq, Clone)]
@@ -1191,6 +1269,11 @@ impl eframe::App for MyApp {
                 self.update_dialog = None;
             }
             return;
+        }
+
+        if !self.privilege_checked {
+            self.check_privilege();
+            self.privilege_checked = true;
         }
 
         let config_before_frame = self.config.clone();
@@ -1370,6 +1453,9 @@ fn handle_update_state() {
 fn main() -> eframe::Result {
     #[cfg(target_os = "windows")]
     utils_win::request_elevation();
+
+    #[cfg(target_os = "linux")]
+    crate::utils_nix::handle_selfcap().unwrap();
 
     handle_update_state();
 

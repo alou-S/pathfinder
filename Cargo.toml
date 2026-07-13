@@ -29,8 +29,10 @@ defguard_wireguard_rs = "0.10.0"
 x25519-dalek = { version = "3.0.0", features = ["getrandom"] }
 egui_commonmark = "0.23.0"
 
-[target.'cfg(not(windows))'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.186"
+caps = "0.5.6"
+which = "8.0.4"
 
 [profile.release]
 strip = true

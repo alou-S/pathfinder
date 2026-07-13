@@ -9,4 +9,6 @@ fn main() {
 
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rerun-if-changed=about.hbs");
+    #[cfg(target_os = "linux")]
+    println!("cargo:rustc-link-lib=cap");
 }

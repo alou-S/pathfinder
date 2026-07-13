@@ -144,6 +144,38 @@ fn humanize_bytes(bytes: u64) -> String {
     }
 }
 
+type GridCell<'a> = Box<dyn FnMut(&mut egui::Ui) + 'a>;
+struct GridRow<'a>(GridCell<'a>, GridCell<'a>);
+
+impl<'a> From<(&'a str, &'a str)> for GridRow<'a> {
+    fn from((left, right): (&'a str, &'a str)) -> Self {
+        GridRow(
+            Box::new(move |ui| {
+                ui.label(left);
+            }),
+            Box::new(move |ui| {
+                ui.label(right);
+            }),
+        )
+    }
+}
+
+fn render_egui_grid<'a, R>(ui: &mut egui::Ui, rows: impl IntoIterator<Item = R>, grid_name: &str)
+where
+    R: Into<GridRow<'a>>,
+{
+    egui::Grid::new(grid_name)
+        .spacing([16.0, 8.0])
+        .striped(true)
+        .show(ui, |ui| {
+            for GridRow(mut left, mut right) in rows.into_iter().map(Into::into) {
+                left(ui);
+                right(ui);
+                ui.end_row();
+            }
+        });
+}
+
 impl MyApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut dir_creation_error = None;
@@ -297,54 +329,93 @@ impl MyApp {
     }
 
     fn show_vpn_frame(&mut self, ui: &mut egui::Ui) {
+        let mut grid_rows: Vec<GridRow<'_>> = Vec::new();
+
         if self.wireguard.wgapi.is_none() && !self.wireguard.waiting_for_tunnel {
-            ui.label("VPN State: Not Running");
-            ui.horizontal(|ui| {
-                ui.label("VPN Key:");
-                egui::ComboBox::from_id_salt("key_select")
-                    .selected_text(
-                        self.wireguard
-                            .selected_key
-                            .as_deref()
-                            .unwrap_or("Select a key"),
-                    )
-                    .show_ui(ui, |ui| {
-                        for key in &self.config.keys {
-                            if let Some(id) = &key.id {
-                                let enabled = id != "Invalid Key";
-                                ui.add_enabled_ui(enabled, |ui| {
-                                    ui.selectable_value(
-                                        &mut self.wireguard.selected_key,
-                                        Some(id.clone()),
-                                        id,
-                                    );
-                                });
-                            }
-                        }
+            grid_rows.push(GridRow(
+                Box::new(|ui| {
+                    ui.label("VPN State");
+                }),
+                Box::new(|ui| {
+                    ui.label("Not Running");
+                }),
+            ));
 
-                        ui.separator();
+            grid_rows.push(GridRow(
+                Box::new(|ui| {
+                    ui.label("VPN Key");
+                }),
+                Box::new(|ui| {
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("key_select")
+                            .selected_text(
+                                self.wireguard
+                                    .selected_key
+                                    .as_deref()
+                                    .unwrap_or("Select a key"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for key in &self.config.keys {
+                                    if let Some(id) = &key.id {
+                                        let enabled = id != "Invalid Key";
+                                        ui.add_enabled_ui(enabled, |ui| {
+                                            ui.selectable_value(
+                                                &mut self.wireguard.selected_key,
+                                                Some(id.clone()),
+                                                id,
+                                            );
+                                        });
+                                    }
+                                }
 
-                        if ui.selectable_label(false, "➕ Add key").clicked() {
-                            self.current_page = Page::Keys;
+                                ui.separator();
+
+                                if ui.selectable_label(false, "➕ Add key").clicked() {
+                                    self.current_page = Page::Keys;
+                                }
+                            });
+
+                        if ui.button("🔄").clicked() {
+                            self.refresh_keys_data();
                         }
                     });
-
-                if ui.button("🔄").clicked() {
-                    self.refresh_keys_data();
-                }
-            });
+                }),
+            ));
         } else {
             if self.wireguard.waiting_for_tunnel {
-                ui.label("VPN State: Waiting for Tunnel");
+                grid_rows.push(GridRow(
+                    Box::new(|ui| {
+                        ui.label("VPN State");
+                    }),
+                    Box::new(|ui| {
+                        ui.label("Waiting for Tunnel");
+                    }),
+                ));
             } else {
-                ui.label("VPN State: Running");
+                grid_rows.push(GridRow(
+                    Box::new(|ui| {
+                        ui.label("VPN State");
+                    }),
+                    Box::new(|ui| {
+                        ui.label("Running");
+                    }),
+                ));
             }
 
-            ui.label(format!(
-                "VPN Key: {}",
-                self.wireguard.selected_key.as_deref().unwrap()
+            grid_rows.push(GridRow(
+                Box::new(|ui| {
+                    ui.label("VPN Key");
+                }),
+                Box::new(|ui| {
+                    ui.label(format!(
+                        "{}",
+                        self.wireguard.selected_key.as_deref().unwrap()
+                    ));
+                }),
             ));
         }
+
+        render_egui_grid(ui, grid_rows, "vpn_frame_grid");
 
         ui.add_space(8.0);
         if (self.wireguard.wgapi.is_none() && !self.wireguard.waiting_for_tunnel)
@@ -471,51 +542,103 @@ impl MyApp {
 
     fn show_tunnel_frame(&mut self, ui: &mut egui::Ui, tunnel_state: TunnelState) {
         let state_text = match &tunnel_state.status {
-            TunnelStatus::DetectingMode | TunnelStatus::DetectingPort => {
-                "Tunnel State: Starting".to_owned()
-            }
+            TunnelStatus::DetectingMode | TunnelStatus::DetectingPort => "Starting".to_owned(),
             TunnelStatus::Failed(err) => {
-                format!("Tunnel State: Failed to Start {}", err)
+                format!("Failed to Start {}", err)
             }
             TunnelStatus::Exited(code) => {
-                format!("Tunnel State: Exited {}", Opt(*code))
+                format!("Exited {}", Opt(*code))
             }
-            TunnelStatus::Running => "Tunnel State: Running".to_owned(),
-            TunnelStatus::Stopping => "Tunnel State: Stopping".to_owned(),
-            TunnelStatus::Stopped => "Tunnel State: Stopped".to_owned(),
+            TunnelStatus::Running => "Running".to_owned(),
+            TunnelStatus::Stopping => "Stopping".to_owned(),
+            TunnelStatus::Stopped => "Stopped".to_owned(),
         };
 
-        ui.label(state_text);
+        let mode_text = match tunnel_state.mode {
+            TunnelMode::Auto => "Detecting",
+            TunnelMode::UDP => "UDP",
+            TunnelMode::TCP => "TCP",
+        };
+
+        let mut grid_rows: Vec<GridRow<'_>> = Vec::new();
+
+        grid_rows.push(GridRow(
+            Box::new(|ui| {
+                ui.label("Tunnel State");
+            }),
+            Box::new(|ui| {
+                ui.label(state_text.clone());
+            }),
+        ));
 
         if tunnel_state.status == TunnelStatus::Stopped {
-            ui.horizontal(|ui| {
-                ui.label("Tunnel Mode: ");
-                egui::ComboBox::from_id_salt("tunnel_mode_select")
-                    .selected_text(self.config.tunnel_mode.label())
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.config.tunnel_mode, TunnelMode::Auto, "Auto");
-                        ui.selectable_value(&mut self.config.tunnel_mode, TunnelMode::TCP, "TCP");
-                        ui.selectable_value(&mut self.config.tunnel_mode, TunnelMode::UDP, "UDP");
-                    });
-            });
+            grid_rows.push(GridRow(
+                Box::new(|ui| {
+                    ui.label("Tunnel Mode");
+                }),
+                Box::new(|ui| {
+                    egui::ComboBox::from_id_salt("tunnel_mode_select")
+                        .selected_text(self.config.tunnel_mode.label())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.config.tunnel_mode,
+                                TunnelMode::Auto,
+                                "Auto",
+                            );
+                            ui.selectable_value(
+                                &mut self.config.tunnel_mode,
+                                TunnelMode::TCP,
+                                "TCP",
+                            );
+                            ui.selectable_value(
+                                &mut self.config.tunnel_mode,
+                                TunnelMode::UDP,
+                                "UDP",
+                            );
+                        });
+                }),
+            ));
 
-            ui.label("Tunnel Port: -");
+            grid_rows.push(GridRow(
+                Box::new(|ui| {
+                    ui.label("Tunnel Port");
+                }),
+                Box::new(|ui| {
+                    ui.label("");
+                }),
+            ));
         } else {
-            let mode_text = match tunnel_state.mode {
-                TunnelMode::Auto => "Tunnel Mode: Detecting",
-                TunnelMode::UDP => "Tunnel Mode: UDP",
-                TunnelMode::TCP => "Tunnel Mode: TCP",
-            };
-
-            ui.label(mode_text);
+            grid_rows.push(GridRow(
+                Box::new(|ui| {
+                    ui.label("Tunnel Mode");
+                }),
+                Box::new(|ui| {
+                    ui.label(mode_text);
+                }),
+            ));
 
             if tunnel_state.port.is_some() {
-                ui.label(format!("Tunnel Port: {}", tunnel_state.port.unwrap()));
+                grid_rows.push(GridRow(
+                    Box::new(|ui| {
+                        ui.label("Tunnel Port");
+                    }),
+                    Box::new(|ui| {
+                        ui.label(format!("{}", tunnel_state.port.unwrap()));
+                    }),
+                ));
             } else {
-                ui.label("Tunnel Port: Detecting");
+                grid_rows.push(GridRow(
+                    Box::new(|ui| {
+                        ui.label("Tunnel Port");
+                    }),
+                    Box::new(|ui| {
+                        ui.label("Detecting");
+                    }),
+                ));
             }
         }
 
+        render_egui_grid(ui, grid_rows, "tunnel_frame_grid");
         ui.add_space(8.0);
         if tunnel_state.status == TunnelStatus::Stopped {
             if ui.button("Start Tunnel").clicked() {
@@ -588,12 +711,12 @@ impl MyApp {
     fn show_key_info_dialog(&mut self, key: Key) {
         let rx_bytes = match key.rx_bytes {
             Some(bytes) => humanize_bytes(bytes),
-            None => "0".to_string(),
+            None => "".to_string(),
         };
 
         let tx_bytes = match key.tx_bytes {
             Some(bytes) => humanize_bytes(bytes),
-            None => "0".to_string(),
+            None => "".to_string(),
         };
 
         let end_date = match key.expiry {
@@ -608,35 +731,16 @@ impl MyApp {
         self.dialog_box = Some(GenericDialogBox::new(
             "Key Info",
             move |ui| {
-                egui::Grid::new("key_info_grid")
-                    .num_columns(2)
-                    .spacing([16.0, 8.0])
-                    .striped(true)
-                    .show(ui, |ui| {
-                        ui.label("Key Name");
-                        ui.label(key_name.as_str());
-                        ui.end_row();
+                let grid_rows = vec![
+                    ("Key Name", key_name.as_str()),
+                    ("Subscription", subscription.as_str()),
+                    ("End Date", end_date.as_str()),
+                    ("IP Address", ip_address.as_str()),
+                    ("Download Usage", rx_bytes.as_str()),
+                    ("Upload Usage", tx_bytes.as_str()),
+                ];
 
-                        ui.label("Subscription");
-                        ui.label(subscription.as_str());
-                        ui.end_row();
-
-                        ui.label("End Date");
-                        ui.label(end_date.as_str());
-                        ui.end_row();
-
-                        ui.label("IP Address");
-                        ui.label(ip_address.as_str());
-                        ui.end_row();
-
-                        ui.label("Download Usage");
-                        ui.label(rx_bytes.as_str());
-                        ui.end_row();
-
-                        ui.label("Upload Usage");
-                        ui.label(tx_bytes.as_str());
-                        ui.end_row();
-                    });
+                render_egui_grid(ui, grid_rows, "key_info_grid");
             },
             "Close",
             None::<String>,
@@ -740,7 +844,7 @@ impl MyApp {
                     egui::RichText::new("📋 Key Table")
                         .text_style(egui::TextStyle::Name("subheading".into())),
                 );
-                ui.add_space(ui.available_width() - 40.0);
+                ui.add_space(ui.available_width() - 30.0);
                 if ui
                     .button(
                         egui::RichText::new("🔄")
@@ -834,51 +938,69 @@ impl MyApp {
         ui.add_space(8.0);
 
         let is_dark = ui.style().visuals.dark_mode;
-        ui.horizontal(|ui| {
-            ui.label("Theme: ");
-            if ui.selectable_label(is_dark, "🌙 Dark").clicked() {
-                ui.set_visuals(egui::Visuals::dark());
-                self.config.dark_mode = true;
-            }
-            if ui.selectable_label(!is_dark, "☀ Light").clicked() {
-                ui.set_visuals(egui::Visuals::light());
-                self.config.dark_mode = false;
-            }
-        });
+        let mut grid_rows: Vec<GridRow<'_>> = Vec::new();
 
-        ui.horizontal(|ui| {
-            ui.label("UI Zoom: ");
+        grid_rows.push(GridRow(
+            Box::new(|ui| {
+                ui.label("Theme");
+            }),
+            Box::new(|ui| {
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(is_dark, "🌙 Dark").clicked() {
+                        ui.set_visuals(egui::Visuals::dark());
+                    }
+                    if ui.selectable_label(!is_dark, "☀ Light").clicked() {
+                        ui.set_visuals(egui::Visuals::light());
+                    }
+                });
+            }),
+        ));
 
-            if ui.button("➖").clicked() {
-                self.config.ui_zoom -= 0.05;
-                self.config.ui_zoom = self.config.ui_zoom.clamp(0.5, 3.0);
-            }
-            ui.label(format!("{:.2}x", self.config.ui_zoom));
-            if ui.button("➕").clicked() {
-                self.config.ui_zoom += 0.05;
-                self.config.ui_zoom = self.config.ui_zoom.clamp(0.5, 3.0);
-            }
-            if ui.button("🔄").clicked() {
-                self.config.ui_zoom = 1.3;
-            }
-        });
+        grid_rows.push(GridRow(
+            Box::new(|ui| {
+                ui.label("UI Zoom");
+            }),
+            Box::new(|ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("➖").clicked() {
+                        self.config.ui_zoom -= 0.05;
+                        self.config.ui_zoom = self.config.ui_zoom.clamp(0.5, 3.0);
+                    }
+                    ui.label(format!("{:.2}x", self.config.ui_zoom));
+                    if ui.button("➕").clicked() {
+                        self.config.ui_zoom += 0.05;
+                        self.config.ui_zoom = self.config.ui_zoom.clamp(0.5, 3.0);
+                    }
+                    if ui.button("🔄").clicked() {
+                        self.config.ui_zoom = 1.3;
+                    }
+                });
+            }),
+        ));
 
-        ui.horizontal(|ui| {
-            ui.label("Font Zoom: ");
+        grid_rows.push(GridRow(
+            Box::new(|ui| {
+                ui.label("Font Zoom");
+            }),
+            Box::new(|ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("➖").clicked() {
+                        self.config.font_zoom -= 0.025;
+                        self.config.font_zoom = self.config.font_zoom.clamp(0.7, 1.3);
+                    }
+                    ui.label(format!("{:.2}x", self.config.font_zoom));
+                    if ui.button("➕").clicked() {
+                        self.config.font_zoom += 0.025;
+                        self.config.font_zoom = self.config.font_zoom.clamp(0.7, 1.3);
+                    }
+                    if ui.button("🔄").clicked() {
+                        self.config.font_zoom = 1.05;
+                    }
+                });
+            }),
+        ));
 
-            if ui.button("➖").clicked() {
-                self.config.font_zoom -= 0.025;
-                self.config.font_zoom = self.config.font_zoom.clamp(0.7, 1.3);
-            }
-            ui.label(format!("{:.2}x", self.config.font_zoom));
-            if ui.button("➕").clicked() {
-                self.config.font_zoom += 0.025;
-                self.config.font_zoom = self.config.font_zoom.clamp(0.7, 1.3);
-            }
-            if ui.button("🔄").clicked() {
-                self.config.font_zoom = 1.05;
-            }
-        });
+        render_egui_grid(ui, grid_rows, "settings_grid");
     }
 
     fn show_about_page(&mut self, ui: &mut egui::Ui) {

@@ -3,8 +3,7 @@ use libc::{c_char, c_int, c_void};
 use std::{
     env,
     ffi::CString,
-    fs,
-    io::{self, Write},
+    fs, io,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},

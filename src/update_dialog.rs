@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::{env, fs, vec};
 
+use crate::fetch::response_with_timeout;
+
 fn sha256sum(file_path: &Path, checksum: &str) -> bool {
     let Ok(data) = fs::read(file_path) else {
         return false;
@@ -455,9 +457,12 @@ fn update_mbtunnel(
         });
         ctx.request_repaint();
 
-        match reqwest::blocking::get(&format!("https://{}/pkgrel/pc-gui", SERVER_HOSTNAME))
-            .and_then(|response| response.text())
-        {
+        let builder = reqwest::blocking::Client::new()
+            .get(&format!("https://{}/pkgrel/pc-gui", SERVER_HOSTNAME));
+
+        let resp = response_with_timeout(builder, 3);
+
+        match resp.and_then(|response| response.text().map_err(|e| e.to_string())) {
             Ok(text) => {
                 if text == PKGREL {
                     break;
@@ -474,7 +479,7 @@ fn update_mbtunnel(
                     Ok(WorkerAction::Retry) => continue,
                     Ok(WorkerAction::Continue) => {
                         *updates_failed = true;
-                        continue;
+                        break;
                     }
                     Err(_) => break,
                 }
@@ -673,7 +678,9 @@ fn download_with_progress(
 
     let binary_url: String = binary_url(binary);
 
-    let response = reqwest::blocking::get(&binary_url)?;
+    let builder = reqwest::blocking::Client::new().get(&binary_url);
+
+    let response = response_with_timeout(builder, 3)?;
 
     let total_bytes = response.content_length().unwrap_or(0);
 

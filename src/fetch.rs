@@ -1,16 +1,40 @@
 use crate::app_config::Key;
 use crate::config::API_URL;
 use anyhow::{Context, Result};
+use reqwest::blocking::{RequestBuilder, Response};
+use std::{sync::mpsc, thread, time::Duration};
+
+pub fn response_with_timeout(
+    builder: RequestBuilder,
+    timeout_secs: u64,
+) -> Result<Response, String> {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let result = builder.send().map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(err_msg)) => Err(err_msg),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(format!("Request timed out.")),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("Request thread disconnected before sending a result".to_string())
+        }
+    }
+}
 
 pub fn fetch_keys_data(mut keys: Vec<Key>) -> Result<Vec<Key>, Box<dyn std::error::Error>> {
     for key_item in &mut keys {
         let key = key_item.priv_key.clone();
         let url = format!("{}/key/info", API_URL);
-        let response = match reqwest::blocking::Client::new()
+
+        let builder = reqwest::blocking::Client::new()
             .get(&url)
-            .header("MBTUNNEL-KEY", &key)
-            .send()
-        {
+            .header("MBTUNNEL-KEY", &key);
+
+        let response = match response_with_timeout(builder, 3) {
             Ok(resp) => resp,
             Err(e) => return Err(e.into()),
         };
@@ -44,10 +68,11 @@ pub fn fetch_config_data(
     Box<dyn std::error::Error>,
 > {
     let url = format!("{}/config", API_URL);
-    let response = reqwest::blocking::Client::new()
+    let builder = reqwest::blocking::Client::new()
         .get(&url)
-        .header("MBTUNNEL-KEY", key)
-        .send()?;
+        .header("MBTUNNEL-KEY", key);
+
+    let response = response_with_timeout(builder, 3)?;
 
     let status = response.status();
 

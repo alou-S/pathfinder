@@ -1,13 +1,17 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use defguard_wireguard_rs::WireguardInterfaceApi;
 use eframe::egui::{self, UiKind};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_extras::{Column, Size, StripBuilder, TableBuilder};
 use regex::Regex;
 use rfd::FileDialog;
-use std::fmt;
-use std::sync::OnceLock;
-use std::{fs, path::PathBuf, time::Duration};
+use std::{
+    fmt, fs,
+    path::PathBuf,
+    sync::OnceLock,
+    time::{Duration, SystemTime},
+};
 
 mod app_config;
 mod config;
@@ -28,7 +32,7 @@ use update_dialog::UpdateDialog;
 static WG_KEY_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 static APPDATA_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-const APP_WINDOW_SIZE: (f32, f32) = (640.0, 508.0);
+const APP_WINDOW_SIZE: (f32, f32) = (678.0, 508.0);
 const LICENSES_MD: &str = include_str!("licenses.md");
 
 pub fn appdata_path() -> &'static PathBuf {
@@ -84,6 +88,7 @@ struct MyApp {
     show_licenses: bool,
     privilege_checked: bool,
     can_run_wireguard: bool,
+    ifdata_error: bool,
 }
 
 fn show_ansi_log(ui: &mut egui::Ui, log: &[u8], font: f32) {
@@ -245,6 +250,7 @@ impl MyApp {
             show_licenses: false,
             privilege_checked: false,
             can_run_wireguard: true,
+            ifdata_error: false,
         }
     }
 
@@ -333,6 +339,75 @@ impl MyApp {
     }
 
     fn show_vpn_frame(&mut self, ui: &mut egui::Ui) {
+        let key = self
+            .config
+            .keys
+            .iter()
+            .find(|k| k.id.clone().unwrap() == self.wireguard.selected_key.clone().unwrap())
+            .unwrap();
+
+        let peer_hashmap = match self.wireguard.wgapi.as_ref() {
+            Some(wgapi) => match wgapi.read_interface_data() {
+                Ok(data) => Some(data.peers),
+                Err(_) => {
+                    if !self.ifdata_error {
+                        self.dialog_box = Some(GenericDialogBox::new(
+                            "Error",
+                            |ui| {
+                                ui.label("Failed to read Wireguard interface data.");
+                            },
+                            "Close",
+                            None::<String>,
+                            DialogAction::None,
+                        ));
+                        self.ifdata_error = true;
+                    }
+                    None
+                }
+            },
+            None => None,
+        };
+
+        let if_data = match peer_hashmap.as_ref() {
+            Some(peers) => peers.values().next(),
+            None => None,
+        };
+
+        let (rx_bytes, tx_bytes, last_handshake) = match if_data {
+            Some(data) => (
+                humanize_bytes(data.rx_bytes),
+                humanize_bytes(data.tx_bytes),
+                data.last_handshake,
+            ),
+            None => ("".to_string(), "".to_string(), None),
+        };
+
+        let seconds_since = match last_handshake {
+            Some(handshake) => {
+                if handshake
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    == 0
+                {
+                    "".to_string()
+                } else {
+                    format!(
+                        "{} seconds ago",
+                        SystemTime::now()
+                            .duration_since(handshake)
+                            .unwrap_or(Duration::from_secs(0))
+                            .as_secs()
+                    )
+                }
+            }
+            None => "".to_string(),
+        };
+
+        let ipv4_addr = key.ip.clone().unwrap();
+        let private_key = key.priv_key.clone();
+        let is_key_active = key.is_active.unwrap();
+
         let mut grid_rows: Vec<GridRow<'_>> = Vec::new();
 
         if self.wireguard.wgapi.is_none() && !self.wireguard.waiting_for_tunnel {
@@ -395,13 +470,22 @@ impl MyApp {
                         ui.label("Waiting for Tunnel");
                     }),
                 ));
+            } else if seconds_since == "" {
+                grid_rows.push(GridRow(
+                    Box::new(|ui| {
+                        ui.label("VPN State");
+                    }),
+                    Box::new(|ui| {
+                        ui.label("Connecting...");
+                    }),
+                ));
             } else {
                 grid_rows.push(GridRow(
                     Box::new(|ui| {
                         ui.label("VPN State");
                     }),
                     Box::new(|ui| {
-                        ui.label("Running");
+                        ui.label("Connected");
                     }),
                 ));
             }
@@ -418,6 +502,42 @@ impl MyApp {
                 }),
             ));
         }
+
+        grid_rows.push(GridRow(
+            Box::new(|ui| {
+                ui.label("VPN IP");
+            }),
+            Box::new(|ui| {
+                ui.label(ipv4_addr.clone());
+            }),
+        ));
+
+        grid_rows.push(GridRow(
+            Box::new(|ui| {
+                ui.label("Handshake");
+            }),
+            Box::new(|ui| {
+                ui.label(seconds_since.clone());
+            }),
+        ));
+
+        grid_rows.push(GridRow(
+            Box::new(|ui| {
+                ui.label("Download");
+            }),
+            Box::new(|ui| {
+                ui.label(rx_bytes.clone());
+            }),
+        ));
+
+        grid_rows.push(GridRow(
+            Box::new(|ui| {
+                ui.label("Upload");
+            }),
+            Box::new(|ui| {
+                ui.label(tx_bytes.clone());
+            }),
+        ));
 
         render_egui_grid(ui, grid_rows, "vpn_frame_grid");
 
@@ -452,17 +572,22 @@ impl MyApp {
                 return;
             }
 
-            let key = self
-                .config
-                .keys
-                .iter()
-                .find(|k| k.id.clone().unwrap() == self.wireguard.selected_key.clone().unwrap())
-                .unwrap();
+            if !is_key_active {
+                self.dialog_box = Some(GenericDialogBox::new(
+                    "Warning",
+                    |ui| {
+                        ui.label("Subscription for the selected key is inactive.");
+                    },
+                    "Continue",
+                    None::<String>,
+                    DialogAction::None,
+                ));
+            }
 
             let mut wgconfig = WgConfig::new();
 
-            wgconfig.ipv4_address = vec![key.ip.clone().unwrap().parse().unwrap()];
-            wgconfig.private_key = key.priv_key.clone();
+            wgconfig.ipv4_address = vec![ipv4_addr.parse().unwrap()];
+            wgconfig.private_key = private_key;
 
             (
                 wgconfig.server_public_key,
@@ -555,6 +680,8 @@ impl MyApp {
                     }
                 }
             }
+
+            self.ifdata_error = false;
         }
     }
 

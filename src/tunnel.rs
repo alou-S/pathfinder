@@ -4,10 +4,10 @@ use defguard_wireguard_rs::{
 use owo_colors::OwoColorize;
 use reqwest::Version;
 use std::{
-    io::Read,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    io::{self, Read},
+    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::Duration,
 };
@@ -36,7 +36,6 @@ pub struct TunnelState {
     pub mode: TunnelMode,
     pub port: Option<u16>,
     pub log: Vec<u8>,
-    log_offset: usize,
 }
 
 pub struct Tunnel {
@@ -52,7 +51,6 @@ impl Tunnel {
                 mode: TunnelMode::Auto,
                 port: None,
                 log: Vec::new(),
-                log_offset: 0,
             })),
             child: Arc::new(Mutex::new(None)),
         }
@@ -171,6 +169,34 @@ async fn test_udp() -> bool {
     false
 }
 
+fn resolve_hostname_timeout(hostname: String, timeout: Duration) -> io::Result<IpAddr> {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let result = (hostname.as_str(), 0)
+            .to_socket_addrs()
+            .and_then(|mut addrs| {
+                addrs
+                    .next()
+                    .map(|addr| addr.ip())
+                    .ok_or_else(|| io::Error::other("No addresses found"))
+            });
+
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "DNS lookup timed out",
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(io::Error::other("DNS worker thread terminated"))
+        }
+    }
+}
+
 pub fn start_tunnel(mode: TunnelMode, tunnel: &Tunnel) {
     let state = Arc::clone(&tunnel.state);
     let child = Arc::clone(&tunnel.child);
@@ -191,11 +217,14 @@ fn run_tunnel_worker(
     state: Arc<Mutex<TunnelState>>,
     child_slot: Arc<Mutex<Option<Child>>>,
 ) -> std::io::Result<()> {
+    let log_offset: usize;
+
     {
         let mut s = state.lock().unwrap();
         s.status = TunnelStatus::DetectingMode;
         s.mode = mode;
         s.port = None;
+        log_offset = s.log.len();
 
         append_log(&mut s.log, LogType::Info, "Starting Tunnel...".to_string());
     }
@@ -221,6 +250,7 @@ fn run_tunnel_worker(
         s.mode = mode;
     }
 
+    let server_ip = resolve_hostname_timeout(SERVER_HOSTNAME.into(), Duration::from_secs(3))?;
     let wss = format!("wss://{}:443", SERVER_HOSTNAME);
 
     let (tunnel_path, tunnel_args) = match mode {
@@ -232,7 +262,7 @@ fn run_tunnel_worker(
                 "-l".to_string(),
                 "0".to_string(),
                 "-h".to_string(),
-                SERVER_HOSTNAME.to_string(),
+                server_ip.to_string(),
                 "-r".to_string(),
                 "443".to_string(),
                 "-d".to_string(),
@@ -345,7 +375,7 @@ fn run_tunnel_worker(
             let mut s = state.lock().unwrap();
 
             if s.port.is_none() {
-                let new_log = &s.log[s.log_offset..];
+                let new_log = &s.log[log_offset..];
                 let log = String::from_utf8_lossy(new_log);
 
                 s.port = log.lines().find_map(|line| {
@@ -353,8 +383,6 @@ fn run_tunnel_worker(
                         .and_then(|caps| caps.get(1))
                         .and_then(|m| m.as_str().parse::<u16>().ok())
                 });
-
-                s.log_offset = s.log.len();
 
                 if s.port.is_some() {
                     s.status = TunnelStatus::Running;
@@ -415,14 +443,10 @@ pub fn stop_tunnel(tunnel: &Tunnel) {
 }
 
 pub fn start_wireguard(wgconfig: WgConfig) -> Result<WGApi, Box<dyn std::error::Error>> {
-    let ifname: String = if cfg!(target_os = "linux") || cfg!(target_os = "freebsd") {
-        "wg0".into()
-    } else {
-        "utun3".into()
-    };
+    let ifname = "mbtun0";
 
     #[cfg(not(target_os = "macos"))]
-    let mut wgapi = WGApi::<defguard_wireguard_rs::Kernel>::new(ifname.clone())?;
+    let mut wgapi = WGApi::<defguard_wireguard_rs::Kernel>::new(ifname)?;
     #[cfg(target_os = "macos")]
     let mut wgapi = WGApi::<defguard_wireguard_rs::Userspace>::new(ifname.clone())?;
 
@@ -445,7 +469,7 @@ pub fn start_wireguard(wgconfig: WgConfig) -> Result<WGApi, Box<dyn std::error::
     peer.allowed_ips = wgconfig.allowed_ips;
 
     let interface_config = InterfaceConfiguration {
-        name: ifname.clone(),
+        name: ifname.into(),
         prvkey: wgconfig.private_key,
         addresses: wgconfig.ipv4_address,
         port: 0,

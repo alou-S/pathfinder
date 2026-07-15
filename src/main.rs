@@ -9,7 +9,10 @@ use rfd::FileDialog;
 use std::{
     fmt, fs,
     path::PathBuf,
-    sync::OnceLock,
+    sync::{
+        Arc, Once, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
@@ -31,6 +34,7 @@ use update_dialog::UpdateDialog;
 
 static WG_KEY_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 static APPDATA_PATH: OnceLock<PathBuf> = OnceLock::new();
+static CLEANUP_DONE: Once = Once::new();
 
 const APP_WINDOW_SIZE: (f32, f32) = (678.0, 508.0);
 const LICENSES_MD: &str = include_str!("licenses.md");
@@ -151,6 +155,63 @@ fn humanize_bytes(bytes: u64) -> String {
     }
 }
 
+fn cleanup() {
+    CLEANUP_DONE.call_once(|| {
+        let _ = crate::tunnel::remove_stale_iface();
+    });
+}
+
+struct CleanupGuard;
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        cleanup();
+    }
+}
+
+fn setup_cleanup_guard() -> Arc<AtomicBool> {
+    let running = Arc::new(AtomicBool::new(true));
+
+    // Cross-platform: Ctrl+C on Windows (CTRL_C_EVENT) and Unix (SIGINT)
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        cleanup();
+        r.store(false, Ordering::SeqCst);
+        std::process::exit(0);
+    })
+    .expect("Error setting Ctrl-C handler");
+
+    // Unix-only: SIGTERM and SIGHUP
+    #[cfg(unix)]
+    {
+        use signal_hook::consts::{SIGHUP, SIGTERM};
+        use signal_hook::flag;
+
+        let term = Arc::new(AtomicBool::new(false));
+        flag::register(SIGTERM, term.clone()).expect("register SIGTERM failed");
+        flag::register(SIGHUP, term.clone()).expect("register SIGHUP failed");
+
+        let running_unix = running.clone();
+        std::thread::spawn(move || {
+            while running_unix.load(Ordering::SeqCst) {
+                if term.load(Ordering::SeqCst) {
+                    cleanup();
+                    std::process::exit(0);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        });
+    }
+
+    // Panic hook, covers unwind-mode panics
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        cleanup();
+        default_hook(info);
+    }));
+
+    running
+}
+
 type GridCell<'a> = Box<dyn FnMut(&mut egui::Ui) + 'a>;
 struct GridRow<'a>(GridCell<'a>, GridCell<'a>);
 
@@ -185,6 +246,8 @@ where
 
 impl MyApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let _ = crate::tunnel::remove_stale_iface();
+
         let mut dir_creation_error = None;
         let mut load_config_error: Option<Box<dyn std::error::Error>> = None;
 
@@ -280,7 +343,7 @@ impl MyApp {
         }
     }
 
-    pub fn handle_zoom_shortcut(&mut self, ui: &mut egui::Ui) {
+    fn handle_zoom_shortcut(&mut self, ui: &mut egui::Ui) {
         let input = ui.ctx().input(|i| i.clone());
 
         if input.modifiers.ctrl && !input.modifiers.shift && !input.modifiers.alt {
@@ -1542,6 +1605,13 @@ impl eframe::App for MyApp {
 
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
+
+    fn on_exit(&mut self) {
+        if self.wireguard.wgapi.is_some() {
+            let wireguard = self.wireguard.wgapi.take().unwrap();
+            let _ = crate::tunnel::stop_wireguard(wireguard);
+        }
+    }
 }
 
 fn handle_update_state() {
@@ -1585,6 +1655,9 @@ fn main() -> eframe::Result {
     crate::utils_nix::handle_selfcap().unwrap();
 
     handle_update_state();
+
+    let _guard = CleanupGuard;
+    setup_cleanup_guard();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

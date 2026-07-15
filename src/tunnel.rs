@@ -442,6 +442,21 @@ pub fn stop_tunnel(tunnel: &Tunnel) {
     }
 }
 
+pub fn remove_stale_iface() -> Result<(), Box<dyn std::error::Error>> {
+    let ifname = "mbtun0";
+
+    #[cfg(not(target_os = "macos"))]
+    let wgapi = WGApi::<defguard_wireguard_rs::Kernel>::new(ifname)?;
+    #[cfg(target_os = "macos")]
+    let mut wgapi = WGApi::<defguard_wireguard_rs::Userspace>::new(ifname)?;
+
+    if wgapi.read_interface_data().is_ok() {
+        wgapi.remove_interface()?;
+    }
+
+    Ok(())
+}
+
 pub fn start_wireguard(wgconfig: WgConfig) -> Result<WGApi, Box<dyn std::error::Error>> {
     let ifname = "mbtun0";
 

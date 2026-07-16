@@ -80,6 +80,23 @@ impl TunnelMode {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum CloseAction {
+    Ask,
+    MinimizeToTray,
+    Exit,
+}
+
+impl CloseAction {
+    pub fn label(&self) -> &'static str {
+        match self {
+            CloseAction::Ask => "Ask every time",
+            CloseAction::MinimizeToTray => "Minimize to Tray",
+            CloseAction::Exit => "Exit",
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -88,6 +105,7 @@ pub struct AppConfig {
     pub tunnel_mode: TunnelMode,
     pub ui_zoom: f32,
     pub font_zoom: f32,
+    pub close_action: CloseAction,
 }
 
 impl Default for AppConfig {
@@ -98,6 +116,7 @@ impl Default for AppConfig {
             tunnel_mode: TunnelMode::Auto,
             ui_zoom: 1.3,
             font_zoom: 1.05,
+            close_action: CloseAction::Ask,
         }
     }
 }

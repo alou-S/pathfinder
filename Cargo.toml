@@ -9,11 +9,11 @@ chrono = { version = "0.4.44", features = ["serde"] }
 eframe = "0.34.3"
 egui_extras = "0.34.3"
 getrandom = "0.4.3"
-regex = "1.13.0"
+regex = "1.13.1"
 rfd = "0.17.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+xxhash-rust = { version = "0.8.17", features = ["xxh3"] }
 zstd = "0.13.3"
 tokio = { version = "1.52.2", features = ["rt", "rt-multi-thread"] }
 reqwest = { version = "0.13.4", features = ["http3", "blocking"] }
@@ -30,17 +30,21 @@ x25519-dalek = { version = "3.0.0", features = ["getrandom"] }
 egui_commonmark = "0.23.0"
 ctrlc = "3.5.2"
 signal-hook = "0.4.4"
+tray-icon = "0.24.1"
+image = "0.25.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.186"
 caps = "0.5.6"
-which = "8.0.4"
+which = "8.0.5"
+gtk = "0.18.2"
+glib = "0.22.8"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = "0.61.2"
 
 [profile.release]
 strip = true
 lto = "none"
 opt-level = 3
 codegen-units = 1
-
-[dev-dependencies]
-udpproxy = "0.1.0"

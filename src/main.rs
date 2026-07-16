@@ -15,6 +15,10 @@ use std::{
     },
     time::{Duration, SystemTime},
 };
+use tray_icon::{
+    TrayIcon, TrayIconBuilder,
+    menu::{Menu, MenuEvent, MenuItem},
+};
 
 mod app_config;
 mod config;
@@ -27,7 +31,7 @@ mod utils_nix;
 #[cfg(target_os = "windows")]
 mod utils_win;
 use crate::tunnel::{Tunnel, TunnelState, TunnelStatus, WgConfig, Wireguard};
-use app_config::{AppConfig, Key, TunnelMode, load_config, save_config};
+use app_config::{AppConfig, CloseAction, Key, TunnelMode, load_config, save_config};
 use fetch::{fetch_config_data, fetch_keys_data};
 use generic_dialog_box::{DialogAction, DialogReply, GenericDialogBox};
 use update_dialog::UpdateDialog;
@@ -72,6 +76,11 @@ impl<T: fmt::Display> fmt::Display for Opt<T> {
         }
     }
 }
+struct TrayObject {
+    _tray: TrayIcon,
+    showhide: MenuItem,
+    quit: MenuItem,
+}
 
 struct MyApp {
     config: AppConfig,
@@ -93,6 +102,11 @@ struct MyApp {
     privilege_checked: bool,
     can_run_wireguard: bool,
     ifdata_error: bool,
+    close_app_dialog_open: bool,
+    remember_close_action: bool,
+    tray_object: Option<TrayObject>,
+    window_visible: bool,
+    allow_exit: bool,
 }
 
 fn show_ansi_log(ui: &mut egui::Ui, log: &[u8], font: f32) {
@@ -294,6 +308,34 @@ impl MyApp {
         _cc.egui_ctx
             .send_viewport_cmd(egui::ViewportCommand::Resizable(false));
 
+        let icon_bytes = include_bytes!("../assets/icon.png");
+        let image = image::load_from_memory(icon_bytes).unwrap().into_rgba8();
+        let (w, h) = image.dimensions();
+        let icon = tray_icon::Icon::from_rgba(image.into_raw(), w, h).unwrap();
+
+        let menu = Menu::new();
+        let showhide = MenuItem::new("Show/Hide", true, None);
+        let quit = MenuItem::new("Quit", true, None);
+
+        menu.append(&showhide).unwrap();
+        menu.append(&quit).unwrap();
+
+        #[cfg(target_os = "linux")]
+        gtk::init().unwrap();
+
+        let _tray = TrayIconBuilder::new()
+            .with_icon(icon)
+            .with_menu(Box::new(menu))
+            .with_tooltip("mbtunnel")
+            .build()
+            .unwrap();
+
+        let tray_object = Some(TrayObject {
+            _tray,
+            showhide,
+            quit,
+        });
+
         Self {
             current_page: Page::Home,
             wgkey_dialog_show: false,
@@ -314,10 +356,15 @@ impl MyApp {
             privilege_checked: false,
             can_run_wireguard: true,
             ifdata_error: false,
+            close_app_dialog_open: false,
+            remember_close_action: false,
+            tray_object,
+            window_visible: true,
+            allow_exit: false,
         }
     }
 
-    fn handle_dialog_reply(&mut self, action: DialogAction, reply: DialogReply) {
+    fn handle_dialog_reply(&mut self, ui: &mut egui::Ui, action: DialogAction, reply: DialogReply) {
         match (action, reply) {
             (DialogAction::ClearAllKeys, DialogReply::Secondary) => {
                 self.config.keys.clear();
@@ -334,6 +381,15 @@ impl MyApp {
             }
             (DialogAction::Exit, _) => {
                 std::process::exit(1);
+            }
+            (DialogAction::GracefulExit, DialogReply::Primary) => {
+                if self.wireguard.wgapi.is_some() {
+                    let wireguard = self.wireguard.wgapi.take().unwrap();
+                    let _ = crate::tunnel::stop_wireguard(wireguard);
+                }
+                self.tray_object.take();
+                self.allow_exit = true;
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
             _ => {}
         }
@@ -379,6 +435,46 @@ impl MyApp {
         }
     }
 
+    fn handle_exit(&mut self, ui: &mut egui::Ui, forced_action: Option<CloseAction>) {
+        let close_action = forced_action.unwrap_or(self.config.close_action);
+        match close_action {
+            CloseAction::Ask => {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.close_app_dialog_open = true;
+                return;
+            }
+            CloseAction::MinimizeToTray => {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.window_visible = false;
+                return;
+            }
+            CloseAction::Exit => {}
+        }
+
+        if self.wireguard.wgapi.is_some() {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            let message = "The VPN is still running. Are you sure you want to exit?";
+            self.dialog_box = Some(GenericDialogBox::new(
+                "Confirm Exit",
+                move |ui| {
+                    ui.label(message);
+                },
+                "Exit",
+                Some("Cancel"),
+                DialogAction::GracefulExit,
+            ));
+        } else {
+            self.tray_object.take();
+            self.allow_exit = true;
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
     fn refresh_keys_data(&mut self) {
         match fetch_keys_data(self.config.keys.clone()) {
             Ok(keys) => {
@@ -406,8 +502,7 @@ impl MyApp {
             .config
             .keys
             .iter()
-            .find(|k| k.id.clone().unwrap() == self.wireguard.selected_key.clone().unwrap())
-            .unwrap();
+            .find(|k| k.id.clone().unwrap() == self.wireguard.selected_key.clone().unwrap());
 
         let peer_hashmap = match self.wireguard.wgapi.as_ref() {
             Some(wgapi) => match wgapi.read_interface_data() {
@@ -467,9 +562,15 @@ impl MyApp {
             None => "".to_string(),
         };
 
-        let ipv4_addr = key.ip.clone().unwrap();
-        let private_key = key.priv_key.clone();
-        let is_key_active = key.is_active.unwrap();
+        let (ipv4_addr, private_key, is_key_active) = if let Some(key) = key {
+            (
+                key.ip.clone().unwrap(),
+                key.priv_key.clone(),
+                key.is_active.unwrap(),
+            )
+        } else {
+            ("".to_string(), "".to_string(), false)
+        };
 
         let mut grid_rows: Vec<GridRow<'_>> = Vec::new();
 
@@ -1135,7 +1236,7 @@ impl MyApp {
     }
 
     fn show_pathfinder_page(&mut self, ui: &mut egui::Ui) {
-        ui.heading("🧭 Pathfinder");
+        ui.heading("📌 Pathfinder");
         ui.separator();
         ui.add_space(8.0);
     }
@@ -1208,6 +1309,35 @@ impl MyApp {
             }),
         ));
 
+        grid_rows.push(GridRow(
+            Box::new(|ui| {
+                ui.label("Close Action");
+            }),
+            Box::new(|ui| {
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("close_action_select")
+                        .selected_text(self.config.close_action.label())
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.config.close_action,
+                                CloseAction::Ask,
+                                "Ask every time",
+                            );
+                            ui.selectable_value(
+                                &mut self.config.close_action,
+                                CloseAction::MinimizeToTray,
+                                "Minimize to Tray",
+                            );
+                            ui.selectable_value(
+                                &mut self.config.close_action,
+                                CloseAction::Exit,
+                                "Exit",
+                            );
+                        });
+                });
+            }),
+        ));
+
         render_egui_grid(ui, grid_rows, "settings_grid");
     }
 
@@ -1246,6 +1376,50 @@ impl MyApp {
                 self.show_licenses = true
             }
         }
+    }
+
+    fn show_close_app_dialog(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx();
+        let mut open = self.close_app_dialog_open;
+        let mut should_close = false;
+
+        egui::Window::new("Close App")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("What would you like to do?");
+                ui.add_space(8.0);
+                ui.checkbox(&mut self.remember_close_action, "Remember my choice");
+                ui.add_space(10.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Minimize to Tray").clicked() {
+                        if self.remember_close_action {
+                            self.config.close_action = CloseAction::MinimizeToTray;
+                            self.remember_close_action = false;
+                        }
+                        should_close = true;
+                        self.handle_exit(ui, Some(CloseAction::MinimizeToTray));
+                    }
+
+                    if ui.button("Exit").clicked() {
+                        if self.remember_close_action {
+                            self.config.close_action = CloseAction::Exit;
+                            self.remember_close_action = false;
+                        }
+                        should_close = true;
+                        self.handle_exit(ui, Some(CloseAction::Exit));
+                    }
+                });
+            });
+
+        if should_close {
+            open = false;
+        }
+
+        self.close_app_dialog_open = open;
     }
 
     fn show_wgkey_dialog(&mut self, ui: &mut egui::Ui) {
@@ -1449,7 +1623,7 @@ impl eframe::App for MyApp {
 
             if let Some((action, reply)) = dialog_event {
                 self.dialog_box = None;
-                self.handle_dialog_reply(action, reply);
+                self.handle_dialog_reply(ui, action, reply);
             }
             return;
         }
@@ -1461,6 +1635,7 @@ impl eframe::App for MyApp {
             return;
         }
 
+        #[cfg(target_os = "linux")]
         if !self.privilege_checked {
             self.check_privilege();
             self.privilege_checked = true;
@@ -1506,6 +1681,41 @@ impl eframe::App for MyApp {
             }
         }
 
+        if self.close_app_dialog_open {
+            self.show_close_app_dialog(ui);
+        }
+
+        if ui.ctx().input(|i| i.viewport().close_requested()) && !self.allow_exit {
+            self.handle_exit(ui, None);
+        }
+
+        #[cfg(target_os = "linux")]
+        glib::MainContext::default().iteration(false);
+
+        if let Ok(event) = MenuEvent::receiver().try_recv() {
+            if event.id == self.tray_object.as_ref().unwrap().showhide.id() {
+                if self.window_visible {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    self.window_visible = false;
+                } else {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    self.window_visible = true;
+                }
+            }
+
+            if event.id == self.tray_object.as_ref().unwrap().quit.id() {
+                if !self.window_visible {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                }
+                self.window_visible = true;
+
+                self.handle_exit(ui, None);
+            }
+        }
+
         egui::Panel::left("sidebar")
             .resizable(false)
             .exact_size(160.0)
@@ -1520,7 +1730,7 @@ impl eframe::App for MyApp {
                 let items = [
                     (Page::Home, "🏠 Home"),
                     (Page::Keys, "🔑 Keys"),
-                    (Page::Pathfinder, "🧭 Pathfinder"),
+                    (Page::Pathfinder, "📌 Pathfinder"),
                     (Page::Settings, "⚙ Settings"),
                     (Page::About, "ℹ About"),
                 ];
@@ -1570,7 +1780,7 @@ impl eframe::App for MyApp {
 
         if let Some((action, reply)) = dialog_event {
             self.dialog_box = None;
-            self.handle_dialog_reply(action, reply);
+            self.handle_dialog_reply(ui, action, reply);
         }
 
         if let Some(err) = self.load_config_error.take() {
@@ -1651,8 +1861,24 @@ fn main() -> eframe::Result {
     #[cfg(target_os = "windows")]
     utils_win::request_elevation();
 
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+        AttachConsole(ATTACH_PARENT_PROCESS);
+        use std::fs::OpenOptions;
+
+        let _ = OpenOptions::new().write(true).open("CONOUT$");
+    }
+
     #[cfg(target_os = "linux")]
     crate::utils_nix::handle_selfcap().unwrap();
+
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() {
+        unsafe {
+            std::env::remove_var("WAYLAND_DISPLAY");
+        }
+    }
 
     handle_update_state();
 

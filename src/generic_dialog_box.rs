@@ -15,6 +15,7 @@ pub enum DialogAction {
     IgnoreSaveError,
     RetryUpdate,
     Exit,
+    GracefulExit,
 }
 
 pub struct GenericDialogBox {

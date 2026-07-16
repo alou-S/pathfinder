@@ -445,10 +445,14 @@ pub fn stop_tunnel(tunnel: &Tunnel) {
 pub fn remove_stale_iface() -> Result<(), Box<dyn std::error::Error>> {
     let ifname = "mbtun0";
 
-    #[cfg(not(target_os = "macos"))]
-    let wgapi = WGApi::<defguard_wireguard_rs::Kernel>::new(ifname)?;
     #[cfg(target_os = "macos")]
     let mut wgapi = WGApi::<defguard_wireguard_rs::Userspace>::new(ifname)?;
+
+    #[cfg(target_os = "windows")]
+    let mut wgapi = WGApi::<defguard_wireguard_rs::Kernel>::new(ifname)?;
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let wgapi = WGApi::<defguard_wireguard_rs::Kernel>::new(ifname)?;
 
     if wgapi.read_interface_data().is_ok() {
         wgapi.remove_interface()?;
@@ -493,10 +497,7 @@ pub fn start_wireguard(wgconfig: WgConfig) -> Result<WGApi, Box<dyn std::error::
         fwmark: None,
     };
 
-    #[cfg(not(windows))]
     wgapi.configure_interface(&interface_config)?;
-    #[cfg(windows)]
-    wgapi.configure_interface(&interface_config, &[], &[])?;
     wgapi.configure_peer_routing(&interface_config.peers)?;
 
     wgapi.configure_dns(
@@ -507,7 +508,14 @@ pub fn start_wireguard(wgconfig: WgConfig) -> Result<WGApi, Box<dyn std::error::
     Ok(wgapi)
 }
 
+#[cfg(not(target_os = "windows"))]
 pub fn stop_wireguard(wgapi: WGApi) -> Result<Option<WGApi>, Box<dyn std::error::Error>> {
+    wgapi.remove_interface()?;
+    Ok(None)
+}
+
+#[cfg(target_os = "windows")]
+pub fn stop_wireguard(mut wgapi: WGApi) -> Result<Option<WGApi>, Box<dyn std::error::Error>> {
     wgapi.remove_interface()?;
     Ok(None)
 }

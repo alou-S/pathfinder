@@ -1,38 +1,80 @@
 use std::{
-    env,
+    env, mem,
+    os::windows::ffi::OsStrExt,
     os::windows::process::CommandExt,
     path::PathBuf,
     process::{Child, Command, Stdio},
+    ptr::null_mut,
 };
 
-pub fn request_elevation() {
-    let is_admin = Command::new("net")
-        .args(["session"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+use windows::{
+    Win32::Foundation::{CloseHandle, HANDLE, HWND},
+    Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
+    Win32::System::Threading::{GetCurrentProcess, OpenProcessToken},
+    Win32::UI::Shell::ShellExecuteW,
+    Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+    core::PCWSTR,
+};
 
-    if !is_admin {
-        let exe = env::current_exe().unwrap();
-        let args: Vec<String> = env::args().skip(1).collect();
+pub fn is_elevated() -> bool {
+    unsafe {
+        let mut token: HANDLE = HANDLE(null_mut());
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
 
-        Command::new("powershell")
-            .args([
-                "-Command",
-                &format!(
-                    "Start-Process -FilePath '{}' -ArgumentList @({}) -Verb RunAs",
-                    exe.display(),
-                    args.iter()
-                        .map(|a| format!("'{}'", a.replace('\'', "''")))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ),
-            ])
-            .spawn()
-            .expect("Failed to request elevation");
+        let mut elevation: TOKEN_ELEVATION = mem::zeroed();
+        let mut ret_size: u32 = 0;
 
-        std::process::exit(0);
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elevation as *mut _ as *mut _),
+            mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret_size,
+        );
+
+        CloseHandle(token).ok();
+
+        match ok {
+            Ok(_) => elevation.TokenIsElevated != 0,
+            Err(_) => false,
+        }
     }
+}
+
+pub fn request_elevation() -> std::io::Result<()> {
+    let current_exe = env::current_exe().unwrap();
+    let exe_wide: Vec<u16> = current_exe
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let args: Vec<String> = env::args().skip(1).collect();
+    let args_joined = args.join(" ");
+    let args_wide: Vec<u16> = args_joined
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let result = ShellExecuteW(
+            Some(HWND(null_mut())),
+            PCWSTR::from_raw(windows::core::w!("runas").as_ptr()),
+            PCWSTR::from_raw(exe_wide.as_ptr()),
+            PCWSTR::from_raw(args_wide.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+
+        if (result.0 as isize) <= 32 {
+            eprintln!("Elevation failed or was cancelled by the user.");
+            std::process::exit(1);
+        }
+    }
+
+    std::process::exit(0);
 }
 
 pub fn spawn_detached_process(path: PathBuf) -> std::io::Result<Child> {

@@ -4,18 +4,18 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chacha20 = "0.10.1"
+chacha20 = "0.10.2"
 chrono = { version = "0.4.44", features = ["serde"] }
-eframe = "0.34.3"
-egui_extras = "0.34.3"
+eframe = "0.36.1"
+egui_extras = "0.36.1"
 getrandom = "0.4.3"
 regex = "1.13.1"
 rfd = "0.17.2"
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.149"
-xxhash-rust = { version = "0.8.17", features = ["xxh3"] }
-zstd = "0.13.3"
-tokio = { version = "1.52.2", features = ["rt", "rt-multi-thread"] }
+xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
+zstd = "0.14.0"
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread"] }
 reqwest = { version = "0.13.4", features = ["http3", "blocking"] }
 anyhow = "1.0.103"
 futures-util = "0.3.32"
@@ -23,25 +23,41 @@ sha2 = "0.11.0"
 hex = "0.4.3"
 flate2 = "1.1.9"
 ur-taking-me-with-you = "8.0.1"
-egui_sgr = "0.3.0"
+egui_sgr = "0.4.0"
 owo-colors = "4.3.0"
-defguard_wireguard_rs = "0.10.0"
+defguard_wireguard_rs = "0.12.0"
 x25519-dalek = { version = "3.0.0", features = ["getrandom"] }
-egui_commonmark = "0.23.0"
+egui_commonmark = "0.25.0"
 ctrlc = "3.5.2"
 signal-hook = "0.4.4"
 tray-icon = "0.24.1"
 image = "0.25.10"
 
+[package.metadata.patch]
+crates = ["defguard_wireguard_rs"]
+
+[patch.crates-io]
+defguard_wireguard_rs = { path = "./target/patch/defguard_wireguard_rs-0.12.0" }
+
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.186"
+libc = "0.2.189"
 caps = "0.5.6"
 which = "8.0.5"
 gtk = "0.18.2"
-glib = "0.22.8"
+glib = "0.22.9"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = "0.61.2"
+windows = { version = "0.62.2", features = [
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
+
+[build-dependencies]
+embedinator = "0.1.0"
 
 [profile.release]
 strip = true

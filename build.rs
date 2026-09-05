@@ -19,4 +19,15 @@ fn main() {
     if target.contains("linux") {
         println!("cargo:rustc-link-lib=cap");
     }
+
+    if target.contains("windows") {
+        use embedinator::{Icon, ResourceBuilder};
+
+        ResourceBuilder::from_env()
+            .add_icon(
+                32512,
+                Icon::from_png_bytes(std::fs::read("assets/icon.png").unwrap()),
+            )
+            .finish();
+    }
 }

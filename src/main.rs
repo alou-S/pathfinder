@@ -99,6 +99,7 @@ struct MyApp {
     wireguard: Wireguard,
     md_cache: CommonMarkCache,
     show_licenses: bool,
+    #[cfg(not(target_os = "windows"))]
     privilege_checked: bool,
     can_run_wireguard: bool,
     ifdata_error: bool,
@@ -353,6 +354,7 @@ impl MyApp {
             wireguard: Wireguard::new(),
             md_cache: CommonMarkCache::default(),
             show_licenses: false,
+            #[cfg(not(target_os = "windows"))]
             privilege_checked: false,
             can_run_wireguard: true,
             ifdata_error: false,
@@ -852,8 +854,8 @@ impl MyApp {
     fn show_tunnel_frame(&mut self, ui: &mut egui::Ui, tunnel_state: TunnelState) {
         let state_text = match &tunnel_state.status {
             TunnelStatus::DetectingMode | TunnelStatus::DetectingPort => "Starting".to_owned(),
-            TunnelStatus::Failed(err) => {
-                format!("Failed to Start {}", err)
+            TunnelStatus::Failed(_) => {
+                format!("Failed to Start")
             }
             TunnelStatus::Exited(code) => {
                 format!("Exited {}", Opt(*code))
@@ -1859,7 +1861,9 @@ fn handle_update_state() {
 
 fn main() -> eframe::Result {
     #[cfg(target_os = "windows")]
-    utils_win::request_elevation();
+    if !crate::utils_win::is_elevated() {
+        crate::utils_win::request_elevation().unwrap();
+    }
 
     #[cfg(windows)]
     unsafe {

@@ -12,4 +12,6 @@ accepted = [
     "MPL-2.0",
     "OFL-1.1",
     "Ubuntu-font-1.0",
+    "NCSA",
+    "Apache-2.0 WITH LLVM-exception",
 ]

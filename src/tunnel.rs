@@ -3,6 +3,8 @@ use defguard_wireguard_rs::{
 };
 use owo_colors::OwoColorize;
 use reqwest::Version;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::{
     io::{self, Read},
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
@@ -287,6 +289,12 @@ fn run_tunnel_worker(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+        cmd.creation_flags(CREATE_NO_WINDOW.0);
+    }
+
     let mut child = ur_taking_me_with_you::spawn_dying_with_parent(cmd)?;
 
     let stdout = child.stdout.take();
@@ -469,7 +477,15 @@ pub fn start_wireguard(wgconfig: WgConfig) -> Result<WGApi, Box<dyn std::error::
     #[cfg(target_os = "macos")]
     let mut wgapi = WGApi::<defguard_wireguard_rs::Userspace>::new(ifname.clone())?;
 
+    #[cfg(not(target_os = "windows"))]
     wgapi.create_interface()?;
+    #[cfg(target_os = "windows")]
+    wgapi.create_interface(
+        binary_path(&Binary::WireguardDll)
+            .to_owned()
+            .to_str()
+            .unwrap(),
+    )?;
 
     let peer_key: Key = wgconfig.server_public_key.parse().map_err(|e| {
         format!(

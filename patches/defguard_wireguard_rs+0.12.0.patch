@@ -1,0 +1,85 @@
+diff --git a/src/wgapi.rs b/src/wgapi.rs
+index af14116..a7c2283 100644
+--- a/src/wgapi.rs
++++ b/src/wgapi.rs
+@@ -3,6 +3,7 @@ use std::marker::PhantomData;
+ 
+ #[cfg(unix)]
+ use defguard_boringtun::device::DeviceHandle;
++
+ #[cfg(target_os = "windows")]
+ use wireguard_nt::Adapter;
+ 
+diff --git a/src/wgapi_windows.rs b/src/wgapi_windows.rs
+index 4144051..840c935 100644
+--- a/src/wgapi_windows.rs
++++ b/src/wgapi_windows.rs
+@@ -4,7 +4,7 @@ use std::{
+     net::IpAddr,
+     os::windows::ffi::OsStrExt,
+     str::FromStr,
+-    sync::{LazyLock, Mutex},
++    sync::{Mutex, OnceLock},
+ };
+ 
+ use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+@@ -51,17 +51,17 @@ use crate::{
+     wgapi::{Kernel, WGApi},
+ };
+ 
+-#[cfg(target_arch = "aarch64")]
+-const WIREGUARD_DLL_PATH: &str = "resources-windows/binaries/wireguard-arm64.dll";
+-#[cfg(target_arch = "x86_64")]
+-const WIREGUARD_DLL_PATH: &str = "resources-windows/binaries/wireguard-amd64.dll";
+ // Load wireguard.dll. Unsafe because we are loading an arbitrary dll file.
+-static WIREGUARD_DLL: LazyLock<Mutex<Wireguard>> = LazyLock::new(|| {
+-    Mutex::new(
+-        unsafe { wireguard_nt::load_from_path(WIREGUARD_DLL_PATH) }
+-            .expect("Failed to load wireguard.dll"),
+-    )
+-});
++static WIREGUARD_DLL: OnceLock<Mutex<Wireguard>> = OnceLock::new();
++
++fn get_or_init_wireguard(dll_path: &str) -> &'static Mutex<Wireguard> {
++    WIREGUARD_DLL.get_or_init(|| {
++        Mutex::new(
++            unsafe { wireguard_nt::load_from_path(dll_path) }
++                .expect("Failed to load wireguard.dll"),
++        )
++    })
++}
+ 
+ const IPV4_LABEL: &str = "IPv4";
+ const IPV6_LABEL: &str = "IPv6";
+@@ -554,11 +554,14 @@ fn set_interface_dns(
+ 
+ /// Manages interfaces created with Windows kernel using https://git.zx2c4.com/wireguard-nt.
+ impl WireguardInterfaceApi for WGApi<Kernel> {
+-    fn create_interface(&mut self) -> Result<(), WireguardInterfaceError> {
++    fn create_interface(&mut self, dll_path: &str) -> Result<(), WireguardInterfaceError> {
+         debug!("Opening/creating interface {}", self.ifname);
+ 
+         // Try to open the adapter. If it's not present create it.
+-        let wireguard = WIREGUARD_DLL.lock().expect("Failed to lock WIREGUARD_DLL");
++        let wireguard = get_or_init_wireguard(dll_path)
++            .lock()
++            .expect("Failed to lock WIREGUARD_DLL");
++
+         let adapter = if let Ok(adapter) = wireguard_nt::Adapter::open(&wireguard, &self.ifname) {
+             debug!("Found existing adapter {}", self.ifname);
+             adapter
+diff --git a/src/wireguard_interface.rs b/src/wireguard_interface.rs
+index a683eb4..db2d6bf 100644
+--- a/src/wireguard_interface.rs
++++ b/src/wireguard_interface.rs
+@@ -10,7 +10,10 @@ use crate::{
+ /// Specific interface being managed is identified by name.
+ pub trait WireguardInterfaceApi {
+     /// Creates a new WireGuard interface.
++    #[cfg(not(target_os = "windows"))]
+     fn create_interface(&mut self) -> Result<(), WireguardInterfaceError>;
++    #[cfg(target_os = "windows")]
++    fn create_interface(&mut self, dll_path: &str) -> Result<(), WireguardInterfaceError>;
+ 
+     /// Assigns IP address to an existing interface.
+     fn assign_address(&self, address: &IpAddrMask) -> Result<(), WireguardInterfaceError>;
